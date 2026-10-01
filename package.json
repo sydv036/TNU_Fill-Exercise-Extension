@@ -1,0 +1,32 @@
+{
+  "name": "tnu-gemini-study-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
+    "postinstall": "wxt prepare",
+    "predev": "npm run icons",
+    "dev": "wxt",
+    "prebuild": "npm run icons",
+    "build": "wxt build",
+    "build:edge": "wxt build -b edge",
+    "zip": "wxt zip",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@wxt-dev/module-react": "^1.1.5",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "wxt": "^0.20.11"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
