@@ -2,15 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { classifyAssessment, normalizeText } from "../../src/classifier";
 import { DEFAULT_SETTINGS } from "../../src/defaults";
 import { recommendedGeminiModels } from "../../src/gemini";
-import type { AppSettings, AppState, GeminiModel, QuizTarget, RunMode, RuntimeMessage, RuntimeResponse, RunStatus } from "../../src/types";
+import type { AppSettings, AppState, GeminiModel, KnowledgeSearchResponse, QuizTarget, RunMode, RuntimeMessage, RuntimeResponse, RunStatus } from "../../src/types";
 
-type TabId = "courses" | "queue" | "run" | "gemini" | "settings" | "logs";
+type TabId = "courses" | "queue" | "run" | "knowledge" | "gemini" | "settings" | "logs";
 
-const EMPTY_STATE: AppState = { settings: DEFAULT_SETTINGS, apiKeyPresent: false, queue: [], logs: [], answerMemoryCount: 0, storageBytes: 0 };
+const EMPTY_STATE: AppState = { settings: DEFAULT_SETTINGS, apiKeyPresent: false, queue: [], logs: [], answerMemoryCount: 0, knowledgeIndexes: [], storageBytes: 0 };
 const TAB_ITEMS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "courses", label: "Khóa học", icon: "▦" },
   { id: "queue", label: "Hàng đợi", icon: "≡" },
   { id: "run", label: "Đang chạy", icon: "▶" },
+  { id: "knowledge", label: "Tài liệu", icon: "⌕" },
   { id: "gemini", label: "Gemini", icon: "✦" },
   { id: "settings", label: "Cài đặt", icon: "⚙" },
   { id: "logs", label: "Nhật ký", icon: "◷" }
@@ -97,6 +98,7 @@ export default function App() {
       {tab === "courses" && <Courses state={state} busy={busy} act={act} setTab={setTab} />}
       {tab === "queue" && <Queue state={state} busy={busy} act={act} setTab={setTab} />}
       {tab === "run" && <RunPanel state={state} busy={busy} act={act} />}
+      {tab === "knowledge" && <KnowledgePanel state={state} busy={busy} act={act} />}
       {tab === "gemini" && <GeminiPanel state={state} busy={busy} act={act} />}
       {tab === "settings" && <SettingsPanel state={state} busy={busy} act={act} />}
       {tab === "logs" && <Logs state={state} />}
@@ -113,7 +115,7 @@ function Courses({ state, busy, act, setTab }: { state: AppState; busy: boolean;
     <div className="course-list">
       {state.courseIndex?.courses.map((course) => <article className="course-card" key={course.id}>
         <button className="course-title" onClick={() => setExpanded((items) => items.includes(course.id) ? items.filter((id) => id !== course.id) : [...items, course.id])}>
-          <span className="course-icon">▤</span><span><b>{course.name}</b><small>{course.category} · {course.weeks.reduce((sum, week) => sum + week.activities.length, 0)} bài</small></span><i>{expanded.includes(course.id) ? "⌃" : "⌄"}</i>
+          <span className="course-icon">▤</span><span><b>{course.name}</b><small>{course.category} · {course.weeks.reduce((sum, week) => sum + week.activities.length, 0)} bài · {course.weeks.reduce((sum, week) => sum + (week.materials?.length ?? 0), 0)} tài liệu</small></span><i>{expanded.includes(course.id) ? "⌃" : "⌄"}</i>
         </button>
         {expanded.includes(course.id) && <div className="weeks">{course.weeks.map((week) => <div key={week.id}><h3>{week.name}</h3>{week.activities.map((activity) => <div className="activity" key={activity.id}><span><b>{activity.name}</b><small className={`pill ${activity.assessmentKind}`}>{kindLabel(activity.assessmentKind)}</small></span><button onClick={() => void add(activity)}>＋</button></div>)}</div>)}</div>}
       </article>)}
@@ -165,13 +167,48 @@ function RunPanel({ state, busy, act }: { state: AppState; busy: boolean; act: (
   const progress = run.totalOnPage ? Math.round((Math.max(0, run.currentQuestion - 1) / run.totalOnPage) * 100) : 0;
   const visibleQuestion = run.pendingDecision?.question ?? run.currentQuestionSnapshot;
   const suggestedIds = new Set(run.pendingDecision?.decision.selectedOptionIds ?? []);
+  const hasCourseKnowledge = state.knowledgeIndexes.some((index) => index.courseId === run.target.courseId && index.chunkCount > 0);
   return <section><div className="run-hero"><span className={`pill ${run.target.assessmentKind}`}>{kindLabel(run.target.assessmentKind)}</span><h2>{run.target.name}</h2><p>{run.target.courseName} · {run.target.week}</p></div>
+    <div className={`answer-source-mode ${state.settings.useCourseKnowledgeForAnswers && hasCourseKnowledge ? "with-docs" : "reason-only"}`}>{state.settings.useCourseKnowledgeForAnswers ? (hasCourseKnowledge ? "📚 Gemini tham khảo chỉ mục tài liệu của môn" : "⚠ Đã bật tài liệu nhưng môn này chưa có chỉ mục — Gemini sẽ tự suy luận") : "🧠 Gemini tự suy luận, không đọc tài liệu"}</div>
     <div className="progress-card"><div className="progress-label"><span>Trang {run.page}</span><b>{run.currentQuestion}/{run.totalOnPage || "–"} câu</b></div><div className="progress"><i style={{ width: `${progress}%` }} /></div><p>{run.message}</p>{run.error && <div className="error-box">{run.error}</div>}</div>
     {visibleQuestion && <article className="question-preview"><div><span>{visibleQuestion.number}</span><small>{visibleQuestion.type === "multiple" ? "Chọn nhiều đáp án" : visibleQuestion.type === "truefalse" ? "Đúng / Sai" : visibleQuestion.type === "unsupported" ? "Cần làm thủ công" : "Chọn một đáp án"}</small></div><h3>{visibleQuestion.prompt || "Câu hỏi không có nội dung chữ"}</h3><div className="preview-options">{visibleQuestion.options.map((option) => <div key={option.id} className={suggestedIds.has(option.id) ? "suggested" : option.selected ? "selected" : ""}><i>{visibleQuestion.type === "multiple" ? "□" : "○"}</i><span>{option.label}</span>{suggestedIds.has(option.id) && <b>Gợi ý</b>}</div>)}</div></article>}
     <div className="quick-mode"><span>Khi Gemini phân vân</span><div><button className={state.settings.uncertainMode === "reason" ? "active" : ""} onClick={() => void act(() => runtime({ type: "SAVE_SETTINGS", settings: { ...state.settings, uncertainMode: "reason" } }), "Đã bật tự suy luận lại.")}>✦ Tự suy luận</button><button className={state.settings.uncertainMode === "ask" ? "active" : ""} onClick={() => void act(() => runtime({ type: "SAVE_SETTINGS", settings: { ...state.settings, uncertainMode: "ask" } }), "Đã chuyển sang hỏi bạn.")}>? Hỏi tôi</button></div></div>
     {run.pendingDecision && <article className="suggestion"><div><span>{run.pendingDecision.decision.selectedOptionIds.length ? (run.pendingDecision.decision.source === "memory" ? "Từ bộ nhớ đáp án" : run.pendingDecision.decision.reasoningPass ? "Gemini đã suy luận lại" : "Gợi ý Gemini") : "Cần bạn xử lý"}</span><b>{Math.round(run.pendingDecision.decision.confidence * 100)}%</b></div><h3>{run.pendingDecision.question.number}</h3>{run.pendingDecision.decision.selectedOptionIds.length > 0 && <p>{run.pendingDecision.decision.selectedOptionIds.map((id) => run.pendingDecision!.question.options.find((option) => option.id === id)?.label).filter(Boolean).join(" · ")}</p>}{state.settings.showReason && <small>{run.pendingDecision.decision.reason}</small>}<div className="actions">{run.pendingDecision.decision.selectedOptionIds.length > 0 && <button className="primary" onClick={() => void act(() => runtime({ type: "APPLY_SUGGESTION" }))}>Áp dụng</button>}<button className="secondary" onClick={() => void act(() => runtime({ type: "RETRY_QUESTION" }))}>Thử lại</button><button className="ghost" onClick={() => void act(() => runtime({ type: "SKIP_QUESTION" }))}>Bỏ qua</button></div></article>}
     <div className="control-grid"><button className="stop" disabled={busy || run.status === "paused" || run.status === "completed"} onClick={() => void act(() => runtime({ type: "STOP_RUN" }))}>■ Dừng</button><button className="primary" disabled={busy || !["paused", "error"].includes(run.status)} onClick={() => void act(() => runtime({ type: "RESUME_RUN" }))}>▶ Tiếp tục</button></div>
     <div className="safety">🛡 Extension luôn dừng trước nút “Nộp bài và kết thúc”.</div>
+  </section>;
+}
+
+function KnowledgePanel({ state, busy, act }: { state: AppState; busy: boolean; act: (fn: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [courseId, setCourseId] = useState("");
+  const [query, setQuery] = useState("");
+  const [useGemini, setUseGemini] = useState(true);
+  const [result, setResult] = useState<KnowledgeSearchResponse>();
+  const course = state.courseIndex?.courses.find((item) => item.id === courseId);
+  const summary = state.knowledgeIndexes.find((item) => item.courseId === courseId);
+  const materials = course?.weeks.flatMap((week) => week.materials ?? []) ?? [];
+  useEffect(() => {
+    if (!courseId && state.courseIndex?.courses[0]) setCourseId(state.courseIndex.courses[0].id);
+  }, [courseId, state.courseIndex]);
+  useEffect(() => setResult(undefined), [courseId]);
+  const kind = (value: string) => value === "slide" ? "Slide" : value === "textbook" ? "Giáo trình" : value === "lecture" ? "Bài giảng" : "Tài liệu";
+  const index = () => act(() => runtime({ type: "INDEX_COURSE_MATERIALS", courseId }), "Đã lập chỉ mục tài liệu môn học.");
+  const search = () => act(async () => {
+    const data = await runtime<KnowledgeSearchResponse>({ type: "SEARCH_KNOWLEDGE", courseId, query, useGemini });
+    setResult(data);
+  });
+  return <section><div className="section-head"><div><h2>Kho tài liệu môn học</h2><p>Tìm xuyên suốt slide và giáo trình theo từng tuần</p></div></div>
+    {!state.courseIndex?.courses.length ? <Empty icon="⌕" title="Chưa có dữ liệu khóa học" text="Vào tab Khóa học và bấm Quét lại trước." /> : <>
+      <div className="panel-card form-grid"><label>Khóa học<select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{state.courseIndex.courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <div className="knowledge-stats"><div><b>{materials.length}</b><small>Tài liệu nhận diện</small></div><div><b>{summary?.chunkCount ?? 0}</b><small>Đoạn đã lập chỉ mục</small></div><div><b>{summary?.failedCount ?? 0}</b><small>Tệp cần kiểm tra</small></div></div>
+        {summary && <small className="indexed-at">Cập nhật {new Date(summary.indexedAt).toLocaleString("vi-VN")}</small>}
+        <button className="primary" disabled={busy || !courseId || !materials.length} onClick={() => void index()}>{busy ? "Đang đọc tài liệu…" : summary ? "↻ Cập nhật chỉ mục" : "Lập chỉ mục tài liệu"}</button>
+        {summary && <button className="ghost danger-text" disabled={busy} onClick={() => void act(() => runtime({ type: "CLEAR_KNOWLEDGE_INDEX", courseId }), "Đã xóa chỉ mục môn học.")}>Xóa chỉ mục môn này</button>}
+      </div>
+      <div className="material-list">{course?.weeks.filter((week) => (week.materials?.length ?? 0) > 0).map((week) => <details key={week.id}><summary><span>{week.name}</span><b>{week.materials.length}</b></summary>{week.materials.map((material) => <a key={material.id} href={material.url} target="_blank" rel="noreferrer"><i className={`material-kind ${material.kind}`}>{kind(material.kind)}</i><span>{material.name}</span><b>↗</b></a>)}</details>)}</div>
+      <div className="panel-card knowledge-search form-grid"><label>Hỏi hoặc tìm trong toàn môn<textarea value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ví dụ: Mô hình cửa sổ Johari gồm những phần nào?" /></label><Toggle label="Nhờ Gemini tổng hợp kèm nguồn" value={useGemini} onChange={setUseGemini} /><button className="primary" disabled={busy || !summary || !query.trim() || (useGemini && (!state.apiKeyPresent || !(state.settings.customModel || state.settings.model)))} onClick={() => void search()}>{useGemini ? "✦ Hỏi từ tài liệu" : "⌕ Tìm đoạn liên quan"}</button>{useGemini && (!state.apiKeyPresent || !(state.settings.customModel || state.settings.model)) && <small className="warn">Hãy lưu API key và chọn model ở tab Gemini, hoặc tắt chế độ tổng hợp.</small>}</div>
+      {result && <article className={`knowledge-result ${result.insufficientEvidence ? "insufficient" : ""}`}><div className="result-head"><b>{result.usedGemini ? "✦ Gemini tổng hợp" : "⌕ Kết quả tìm kiếm"}</b>{result.insufficientEvidence && <span>Chưa đủ nguồn</span>}</div><p>{result.answer}</p><div className="citations">{result.citations.map((citation, index) => <a key={citation.chunkId} href={citation.materialUrl} target="_blank" rel="noreferrer"><b>[{citation.sourceNumber ?? index + 1}] {citation.materialName}</b><small>{citation.week}{citation.page ? ` · Trang ${citation.page}` : ""}</small><p>{citation.excerpt}</p></a>)}</div></article>}
+    </>}
   </section>;
 }
 
@@ -215,6 +252,8 @@ function SettingsPanel({ state, busy, act }: { state: AppState; busy: boolean; a
     <Toggle label="Thông báo hệ thống" value={settings.notificationsEnabled} onChange={(value) => set("notificationsEnabled", value)} />
     <Toggle label="Âm thanh" value={settings.soundEnabled} onChange={(value) => set("soundEnabled", value)} />
     <Toggle label="Hiện giải thích Gemini" value={settings.showReason} onChange={(value) => set("showReason", value)} />
+    <Toggle label="Tham khảo tài liệu môn học khi trả lời quiz" value={settings.useCourseKnowledgeForAnswers} onChange={(value) => set("useCourseKnowledgeForAnswers", value)} />
+    <small className="setting-help">{settings.useCourseKnowledgeForAnswers ? "Gemini nhận tối đa 5 đoạn liên quan từ chỉ mục của đúng môn. Nếu môn chưa có chỉ mục, Gemini vẫn tự suy luận." : "Gemini chỉ dùng câu hỏi, lựa chọn và kiến thức của model; không đọc chỉ mục tài liệu."}</small>
     <label>Khi Gemini phân vân<select value={settings.uncertainMode} onChange={(event) => set("uncertainMode", event.target.value as AppSettings["uncertainMode"])}><option value="reason">Tự suy luận lại một lần</option><option value="ask">Dừng và hỏi tôi</option></select></label>
     {settings.soundEnabled && <label>Âm lượng <b>{Math.round(settings.volume * 100)}%</b><input type="range" min="0.05" max="1" step="0.05" value={settings.volume} onChange={(event) => set("volume", Number(event.target.value))} /></label>}
     <button className="primary" disabled={busy} onClick={() => void act(() => runtime({ type: "SAVE_SETTINGS", settings }), "Đã lưu cài đặt.")}>Lưu cài đặt</button>

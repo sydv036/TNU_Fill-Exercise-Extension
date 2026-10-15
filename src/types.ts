@@ -2,6 +2,7 @@ export type AssessmentKind = "practice" | "graded" | "unknown";
 export type QuestionType = "single" | "multiple" | "truefalse" | "unsupported";
 export type RunMode = "from_start" | "from_current";
 export type UncertainMode = "reason" | "ask";
+export type CourseMaterialKind = "slide" | "textbook" | "lecture" | "other";
 export type RunStatus =
   | "idle"
   | "scanning"
@@ -66,10 +67,73 @@ export interface QuizTarget {
   source: "auto" | "manual";
 }
 
+export interface CourseMaterial {
+  id: string;
+  courseId: string;
+  courseName: string;
+  week: string;
+  name: string;
+  url: string;
+  kind: CourseMaterialKind;
+}
+
+export interface KnowledgeChunk {
+  id: string;
+  courseId: string;
+  materialId: string;
+  materialName: string;
+  materialUrl: string;
+  week: string;
+  kind: CourseMaterialKind;
+  page?: number;
+  text: string;
+}
+
+export interface KnowledgeIndex {
+  courseId: string;
+  courseName: string;
+  indexedAt: string;
+  materials: CourseMaterial[];
+  chunks: KnowledgeChunk[];
+  failedMaterials: Array<{ materialId: string; name: string; reason: string }>;
+}
+
+export interface KnowledgeExtractionResult {
+  chunks: KnowledgeChunk[];
+  failedMaterials: Array<{ materialId: string; name: string; reason: string }>;
+}
+
+export interface KnowledgeIndexSummary {
+  courseId: string;
+  courseName: string;
+  indexedAt: string;
+  materialCount: number;
+  chunkCount: number;
+  failedCount: number;
+}
+
+export interface KnowledgeCitation {
+  chunkId: string;
+  sourceNumber?: number;
+  materialName: string;
+  materialUrl: string;
+  week: string;
+  page?: number;
+  excerpt: string;
+}
+
+export interface KnowledgeSearchResponse {
+  answer: string;
+  citations: KnowledgeCitation[];
+  usedGemini: boolean;
+  insufficientEvidence: boolean;
+}
+
 export interface CourseWeek {
   id: string;
   name: string;
   activities: QuizTarget[];
+  materials: CourseMaterial[];
 }
 
 export interface CourseInfo {
@@ -110,7 +174,7 @@ export interface RunSession {
 }
 
 export interface AppSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
   model: string;
   customModel: string;
   uncertainMode: UncertainMode;
@@ -125,6 +189,7 @@ export interface AppSettings {
   volume: number;
   autoNavigate: boolean;
   showReason: boolean;
+  useCourseKnowledgeForAnswers: boolean;
 }
 
 export interface GeminiModel {
@@ -141,6 +206,7 @@ export interface AppState {
   run?: RunSession;
   logs: LogEntry[];
   answerMemoryCount: number;
+  knowledgeIndexes: KnowledgeIndexSummary[];
   storageBytes: number;
 }
 
@@ -170,6 +236,10 @@ export type RuntimeMessage =
   | { type: "SAVE_REVIEW_ANSWERS"; entries: AnswerMemoryEntry[] }
   | { type: "CLEAR_ANSWER_MEMORY" }
   | { type: "CLEAR_ALL_DATA" }
+  | { type: "INDEX_COURSE_MATERIALS"; courseId: string }
+  | { type: "EXTRACT_COURSE_MATERIALS"; materials: CourseMaterial[] }
+  | { type: "SEARCH_KNOWLEDGE"; courseId: string; query: string; useGemini: boolean }
+  | { type: "CLEAR_KNOWLEDGE_INDEX"; courseId: string }
   | { type: "UPDATE_RUN"; patch: Partial<RunSession> }
   | { type: "NOTIFY"; title: string; message: string; level?: LogEntry["level"] }
   | { type: "CONTENT_READY"; url: string };

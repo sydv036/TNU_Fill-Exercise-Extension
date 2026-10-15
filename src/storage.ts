@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS } from "./defaults";
-import type { AnswerMemoryEntry, AppSettings, AppState, CourseIndex, LogEntry, QuizTarget, RunSession } from "./types";
+import { mergeAnswerMemory } from "./answer-memory";
+import type { AnswerMemoryEntry, AppSettings, AppState, CourseIndex, KnowledgeIndex, KnowledgeIndexSummary, LogEntry, QuizTarget, RunSession } from "./types";
 
 const KEYS = {
   settings: "settings",
@@ -8,7 +9,9 @@ const KEYS = {
   queue: "queue",
   logs: "logs",
   run: "runSession",
-  answerMemory: "answerMemory"
+  answerMemory: "answerMemory",
+  knowledgeIndexes: "knowledgeIndexes",
+  reviewCaptures: "reviewCaptures"
 } as const;
 
 export async function secureLocalStorage(): Promise<void> {
@@ -22,7 +25,7 @@ export async function getSettings(): Promise<AppSettings> {
 
 export function migrateSettings(value: unknown): AppSettings {
   if (!value || typeof value !== "object") return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...(value as Partial<AppSettings>), schemaVersion: 2 };
+  return { ...DEFAULT_SETTINGS, ...(value as Partial<AppSettings>), schemaVersion: 3 };
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
@@ -69,8 +72,15 @@ export async function appendLog(level: LogEntry["level"], message: string): Prom
 }
 
 export async function getState(): Promise<AppState> {
-  const local = await browser.storage.local.get([KEYS.courseIndex, KEYS.queue, KEYS.logs, KEYS.apiKey, KEYS.answerMemory]);
-  const answerMemory = (local[KEYS.answerMemory] as AnswerMemoryEntry[] | undefined) ?? [];
+  const local = await browser.storage.local.get([KEYS.courseIndex, KEYS.queue, KEYS.logs, KEYS.apiKey, KEYS.answerMemory, KEYS.knowledgeIndexes]);
+  const answerMemory = mergeAnswerMemory([], (local[KEYS.answerMemory] as AnswerMemoryEntry[] | undefined) ?? []);
+  const rawMemoryCount = ((local[KEYS.answerMemory] as AnswerMemoryEntry[] | undefined) ?? []).length;
+  if (answerMemory.length !== rawMemoryCount) await browser.storage.local.set({ [KEYS.answerMemory]: answerMemory });
+  const knowledgeIndexes = (local[KEYS.knowledgeIndexes] as Record<string, KnowledgeIndex> | undefined) ?? {};
+  const summaries: KnowledgeIndexSummary[] = Object.values(knowledgeIndexes).map((index) => ({
+    courseId: index.courseId, courseName: index.courseName, indexedAt: index.indexedAt,
+    materialCount: index.materials.length, chunkCount: index.chunks.length, failedCount: index.failedMaterials.length
+  }));
   return {
     settings: await getSettings(),
     apiKeyPresent: Boolean(local[KEYS.apiKey]),
@@ -78,9 +88,42 @@ export async function getState(): Promise<AppState> {
     queue: (local[KEYS.queue] as QuizTarget[] | undefined) ?? [],
     logs: (local[KEYS.logs] as LogEntry[] | undefined) ?? [],
     answerMemoryCount: answerMemory.length,
+    knowledgeIndexes: summaries,
     storageBytes: await browser.storage.local.getBytesInUse(null),
     run: await getRun()
   };
+}
+
+export async function getKnowledgeIndex(courseId: string): Promise<KnowledgeIndex | undefined> {
+  const value = await browser.storage.local.get(KEYS.knowledgeIndexes);
+  return (value[KEYS.knowledgeIndexes] as Record<string, KnowledgeIndex> | undefined)?.[courseId];
+}
+
+export async function saveKnowledgeIndex(index: KnowledgeIndex): Promise<void> {
+  const value = await browser.storage.local.get(KEYS.knowledgeIndexes);
+  const indexes = (value[KEYS.knowledgeIndexes] as Record<string, KnowledgeIndex> | undefined) ?? {};
+  const next = { ...indexes, [index.courseId]: index };
+  const estimatedBytes = new TextEncoder().encode(JSON.stringify(next)).byteLength;
+  if (estimatedBytes > 8_000_000) throw new Error("Chỉ mục tài liệu vượt 8 MB. Hãy xóa chỉ mục môn cũ hoặc chọn ít tài liệu hơn.");
+  await browser.storage.local.set({ [KEYS.knowledgeIndexes]: next });
+}
+
+export async function clearKnowledgeIndex(courseId: string): Promise<void> {
+  const value = await browser.storage.local.get(KEYS.knowledgeIndexes);
+  const indexes = { ...((value[KEYS.knowledgeIndexes] as Record<string, KnowledgeIndex> | undefined) ?? {}) };
+  delete indexes[courseId];
+  await browser.storage.local.set({ [KEYS.knowledgeIndexes]: indexes });
+}
+
+export async function wasReviewCaptured(url: string): Promise<boolean> {
+  const value = await browser.storage.session.get(KEYS.reviewCaptures);
+  return Boolean((value[KEYS.reviewCaptures] as Record<string, boolean> | undefined)?.[url]);
+}
+
+export async function markReviewCaptured(url: string): Promise<void> {
+  const value = await browser.storage.session.get(KEYS.reviewCaptures);
+  const captures = (value[KEYS.reviewCaptures] as Record<string, boolean> | undefined) ?? {};
+  await browser.storage.session.set({ [KEYS.reviewCaptures]: { ...captures, [url]: true } });
 }
 
 export async function saveCourseIndex(courseIndex: CourseIndex): Promise<void> {
@@ -93,16 +136,17 @@ export async function saveQueue(queue: QuizTarget[]): Promise<void> {
 
 export async function getAnswerMemory(): Promise<AnswerMemoryEntry[]> {
   const value = await browser.storage.local.get(KEYS.answerMemory);
-  return (value[KEYS.answerMemory] as AnswerMemoryEntry[] | undefined) ?? [];
+  const stored = (value[KEYS.answerMemory] as AnswerMemoryEntry[] | undefined) ?? [];
+  const normalized = mergeAnswerMemory([], stored);
+  if (normalized.length !== stored.length) await browser.storage.local.set({ [KEYS.answerMemory]: normalized });
+  return normalized;
 }
 
 export async function saveAnswerMemory(entries: AnswerMemoryEntry[]): Promise<number> {
   const current = await getAnswerMemory();
-  const merged = new Map(current.map((entry) => [entry.id, entry]));
-  entries.forEach((entry) => merged.set(entry.id, entry));
-  const next = [...merged.values()].slice(-3000);
-  await browser.storage.local.set({ [KEYS.answerMemory]: next });
-  return next.length;
+  const limited = mergeAnswerMemory(current, entries);
+  await browser.storage.local.set({ [KEYS.answerMemory]: limited });
+  return limited.length;
 }
 
 export async function clearAnswerMemory(): Promise<void> {

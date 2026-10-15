@@ -1,10 +1,11 @@
-import { answerWithGemini, listGeminiModels } from "../src/gemini";
+import { answerKnowledgeWithGemini, answerWithGemini, listGeminiModels } from "../src/gemini";
 import { findMemoryDecision } from "../src/answer-memory";
+import { citationFromChunk, searchKnowledge } from "../src/knowledge";
 import {
-  appendLog, clearAllData, clearAnswerMemory, deleteApiKey, getAnswerMemory, getApiKey, getRun, getSettings, getState, saveAnswerMemory, saveApiKey,
-  saveCourseIndex, saveQueue, saveRun, saveSettings, secureLocalStorage, updateRun
+  appendLog, clearAllData, clearAnswerMemory, clearKnowledgeIndex, deleteApiKey, getAnswerMemory, getApiKey, getKnowledgeIndex, getRun, getSettings, getState,
+  markReviewCaptured, saveAnswerMemory, saveApiKey, saveCourseIndex, saveKnowledgeIndex, saveQueue, saveRun, saveSettings, secureLocalStorage, updateRun, wasReviewCaptured
 } from "../src/storage";
-import type { CourseIndex, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
+import type { CourseIndex, KnowledgeChunk, KnowledgeExtractionResult, KnowledgeIndex, KnowledgeSearchResponse, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
 
 const activeRequests = new Map<string, AbortController>();
 
@@ -122,10 +123,18 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       try {
         const settings = await getSettings();
         const apiKey = await getApiKey();
-        let decision = await answerWithGemini(apiKey, settings, message.question, controller.signal);
+        let knowledgeChunks: KnowledgeChunk[] = [];
+        if (settings.useCourseKnowledgeForAnswers) {
+          const knowledgeIndex = await getKnowledgeIndex(run.target.courseId);
+          if (knowledgeIndex) {
+            const query = [message.question.prompt, ...message.question.options.map((option) => option.label)].join(" ");
+            knowledgeChunks = searchKnowledge(knowledgeIndex.chunks, query, 5);
+          }
+        }
+        let decision = await answerWithGemini(apiKey, settings, message.question, controller.signal, fetch, false, knowledgeChunks);
         if (settings.uncertainMode === "reason" && (decision.needsHumanReview || decision.confidence < settings.confidenceThreshold)) {
           await updateRun({ message: `${message.question.number}: Gemini đang tự suy luận lại...` });
-          decision = await answerWithGemini(apiKey, settings, message.question, controller.signal, fetch, true);
+          decision = await answerWithGemini(apiKey, settings, message.question, controller.signal, fetch, true, knowledgeChunks);
         }
         return { ok: true, data: decision };
       } finally {
@@ -134,7 +143,10 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
     }
     case "SAVE_REVIEW_ANSWERS": {
       if (!message.entries.length) return { ok: true, data: { saved: 0, total: (await getAnswerMemory()).length } };
+      const sourceUrl = message.entries[0]?.sourceUrl;
+      if (sourceUrl && await wasReviewCaptured(sourceUrl)) return { ok: true, data: { saved: 0, total: (await getAnswerMemory()).length } };
       const total = await saveAnswerMemory(message.entries);
+      if (sourceUrl) await markReviewCaptured(sourceUrl);
       await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
       return { ok: true, data: { saved: message.entries.length, total } };
     }
@@ -147,6 +159,51 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       activeRequests.clear();
       await sendToActiveTab({ type: "STOP_RUN" }).catch(() => undefined);
       await clearAllData();
+      return { ok: true };
+    case "INDEX_COURSE_MATERIALS": {
+      const state = await getState();
+      const course = state.courseIndex?.courses.find((item) => item.id === message.courseId);
+      if (!course) throw new Error("Không tìm thấy khóa học. Hãy quét khóa học trước.");
+      const materials = course.weeks.flatMap((week) => week.materials ?? []);
+      if (!materials.length) throw new Error("Khóa học này chưa có slide hoặc giáo trình được nhận diện.");
+      await appendLog("info", `Đang lập chỉ mục ${materials.length} tài liệu của ${course.name}.`);
+      const result = await sendToActiveTab<RuntimeResponse<KnowledgeExtractionResult>>({ type: "EXTRACT_COURSE_MATERIALS", materials });
+      if (!result.ok || !result.data) throw new Error(result.error || "Không đọc được tài liệu.");
+      const index: KnowledgeIndex = {
+        courseId: course.id, courseName: course.name, indexedAt: new Date().toISOString(), materials,
+        chunks: result.data.chunks, failedMaterials: result.data.failedMaterials
+      };
+      await saveKnowledgeIndex(index);
+      await appendLog("success", `Đã lập chỉ mục ${index.chunks.length} đoạn từ ${materials.length - index.failedMaterials.length}/${materials.length} tài liệu.`);
+      return { ok: true, data: index };
+    }
+    case "SEARCH_KNOWLEDGE": {
+      const query = message.query.trim();
+      if (!query) throw new Error("Hãy nhập nội dung cần tìm.");
+      const index = await getKnowledgeIndex(message.courseId);
+      if (!index) throw new Error("Môn này chưa được lập chỉ mục tài liệu.");
+      const matches = searchKnowledge(index.chunks, query, 8);
+      if (!matches.length) return { ok: true, data: { answer: "Không tìm thấy đoạn tài liệu phù hợp với từ khóa này.", citations: [], usedGemini: false, insufficientEvidence: true } satisfies KnowledgeSearchResponse };
+      if (!message.useGemini) {
+        return { ok: true, data: {
+          answer: `Tìm thấy ${matches.length} đoạn liên quan. Mở các nguồn bên dưới để xem nội dung đầy đủ.`,
+          citations: matches.slice(0, 6).map(citationFromChunk), usedGemini: false, insufficientEvidence: false
+        } satisfies KnowledgeSearchResponse };
+      }
+      const controller = new AbortController();
+      const requestId = `knowledge:${message.courseId}`;
+      activeRequests.get(requestId)?.abort();
+      activeRequests.set(requestId, controller);
+      try {
+        const data = await answerKnowledgeWithGemini(await getApiKey(), await getSettings(), query, matches, controller.signal);
+        return { ok: true, data };
+      } finally {
+        activeRequests.delete(requestId);
+      }
+    }
+    case "CLEAR_KNOWLEDGE_INDEX":
+      await clearKnowledgeIndex(message.courseId);
+      await appendLog("warning", "Đã xóa chỉ mục tài liệu của một khóa học.");
       return { ok: true };
     case "UPDATE_RUN":
       return { ok: true, data: await updateRun(message.patch) };

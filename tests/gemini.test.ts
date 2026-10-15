@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { answerWithGemini, GeminiError, listGeminiModels, recommendedGeminiModels } from "../src/gemini";
 import { DEFAULT_SETTINGS } from "../src/defaults";
-import type { QuestionSnapshot } from "../src/types";
+import type { KnowledgeChunk, QuestionSnapshot } from "../src/types";
+import { migrateSettings } from "../src/storage";
 
 const question: QuestionSnapshot = {
   id: "question-1", number: "Câu 1", type: "single", prompt: "2 + 2 bằng bao nhiêu?", images: [],
@@ -49,5 +50,26 @@ describe("Gemini provider", () => {
     const decision = await answerWithGemini("key", { ...DEFAULT_SETTINGS, model: "gemini-test" }, question, new AbortController().signal, fetcher, true);
     expect(requestBody).toContain("tự phản biện");
     expect(decision.reasoningPass).toBe(true);
+  });
+
+  it("includes indexed course material only when context is supplied", async () => {
+    let requestBody = "";
+    const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ selectedOptionIds: ["option_1"], confidence: 0.95, reason: "Theo giáo trình", needsHumanReview: false }) }] } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const context: KnowledgeChunk[] = [{
+      id: "chunk-1", courseId: "11086", materialId: "m1", materialName: "Giáo trình Bài 1",
+      materialUrl: "https://tnu.aum.edu.vn/mod/resource/view.php?id=1", week: "Tuần 1", kind: "textbook", page: 4,
+      text: "Tài liệu xác nhận phép cộng hai cộng hai bằng bốn."
+    }];
+    await answerWithGemini("key", { ...DEFAULT_SETTINGS, model: "gemini-test" }, question, new AbortController().signal, fetcher, false, context);
+    expect(requestBody).toContain("Giáo trình Bài 1");
+    expect(requestBody).toContain("trang 4");
+  });
+
+  it("migrates old settings with document lookup disabled and remembers an explicit choice", () => {
+    expect(migrateSettings({ schemaVersion: 2, model: "gemini-test" }).useCourseKnowledgeForAnswers).toBe(false);
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, useCourseKnowledgeForAnswers: true }).useCourseKnowledgeForAnswers).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import type { AppSettings } from "./types";
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   model: "",
   customModel: "",
   uncertainMode: "reason",
@@ -15,5 +15,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   soundEnabled: true,
   volume: 0.65,
   autoNavigate: true,
-  showReason: true
+  showReason: true,
+  useCourseKnowledgeForAnswers: false
 };

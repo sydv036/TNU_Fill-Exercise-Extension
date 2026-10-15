@@ -2,6 +2,9 @@ import { defineConfig } from "wxt";
 
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
+  vite: () => ({
+    build: { assetsInlineLimit: 0 }
+  }),
   manifest: {
     name: "TNU Gemini Study Assistant",
     description: "Hỗ trợ luyện tập Moodle TNU với Gemini và luôn dừng trước bước nộp bài.",
@@ -12,6 +15,10 @@ export default defineConfig({
       "https://tnu.aum.edu.vn/*",
       "https://generativelanguage.googleapis.com/*"
     ],
+    web_accessible_resources: [{
+      resources: ["assets/*.mjs"],
+      matches: ["https://tnu.aum.edu.vn/*"]
+    }],
     action: {
       default_title: "Mở TNU Gemini Assistant"
     },

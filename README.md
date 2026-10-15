@@ -11,6 +11,10 @@ Extension Manifest V3 dành cho Chrome/Edge, hỗ trợ quét khóa học TNU, d
 - Lần làm sau, bộ nhớ đáp án được đối chiếu theo nội dung câu hỏi và nội dung lựa chọn, nên không phụ thuộc thứ tự A/B/C/D.
 - Có thể xem số đáp án đã nhớ hoặc xóa toàn bộ bộ nhớ trong tab **Cài đặt**.
 - Tab **Cài đặt** hiển thị dung lượng cục bộ, cho phép xóa riêng API key hoặc reset toàn bộ dữ liệu extension với bước xác nhận chống bấm nhầm.
+- Tab **Tài liệu** tự nhận diện slide, giáo trình và bài giảng theo từng tuần, đọc nội dung PDF rồi lập chỉ mục cục bộ.
+- Có thể tìm từ khóa trong toàn môn mà không cần Gemini, hoặc nhờ Gemini tổng hợp từ các đoạn liên quan nhất và dẫn lại đúng tài liệu, tuần, số trang.
+- Có thể cập nhật/xóa chỉ mục riêng từng môn; chỉ mục được giới hạn dung lượng để không làm nặng hồ sơ Chrome.
+- Trong **Cài đặt**, có thể bật/tắt việc tham khảo chỉ mục tài liệu khi Gemini trả lời quiz. Lựa chọn được lưu lại; khi tắt, Gemini tự suy luận chỉ từ câu hỏi và phương án.
 
 ## Chạy dự án
 
@@ -25,9 +29,10 @@ Sau khi build, mở `chrome://extensions` hoặc `edge://extensions`, bật **Ch
 ## Quyền riêng tư
 
 - API key Gemini được lưu trong `chrome.storage.local` và chỉ cho extension truy cập. Khu vực này không phải kho bí mật được mã hóa.
-- Chỉ nội dung câu hỏi, phương án và ảnh thuộc câu hỏi được gửi tới Gemini.
+- Khi làm quiz, chỉ nội dung câu hỏi, phương án và ảnh thuộc câu hỏi được gửi tới Gemini. Khi hỏi tài liệu, chỉ tối đa tám đoạn khớp nhất được gửi, không gửi toàn bộ tệp.
 - Không gửi cookie, tên tài khoản hoặc toàn bộ HTML trang.
 - Bộ nhớ đáp án đúng được lưu cục bộ, tối đa 3.000 câu. Nội dung này có thể xóa bất kỳ lúc nào trong extension.
+- Văn bản trích từ slide/giáo trình được lưu trong vùng dữ liệu riêng của extension; có thể xóa theo môn hoặc reset toàn bộ.
 
 ## Chốt an toàn
 

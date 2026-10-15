@@ -1,4 +1,5 @@
-import type { AnswerDecision, AppSettings, GeminiModel, QuestionSnapshot } from "./types";
+import { citationFromChunk } from "./knowledge";
+import type { AnswerDecision, AppSettings, GeminiModel, KnowledgeChunk, KnowledgeSearchResponse, QuestionSnapshot } from "./types";
 
 type Fetcher = typeof fetch;
 
@@ -63,9 +64,9 @@ function validateDecision(value: unknown, question: QuestionSnapshot, threshold:
   };
 }
 
-function buildPrompt(question: QuestionSnapshot, deepReasoning: boolean): string {
+function buildPrompt(question: QuestionSnapshot, deepReasoning: boolean, knowledgeChunks: KnowledgeChunk[]): string {
   const answers = question.options.map((option) => `${option.id}: ${option.label}`).join("\n");
-  return [
+  const prompt = [
     "Bạn là trợ lý học tập. Phân tích câu hỏi trắc nghiệm và chọn phương án đúng nhất.",
     "Chỉ sử dụng đúng option ID đã cung cấp; không dùng chữ cái A/B/C/D.",
     `Loại câu: ${question.type}`,
@@ -75,7 +76,14 @@ function buildPrompt(question: QuestionSnapshot, deepReasoning: boolean): string
     deepReasoning
       ? "Đây là lượt suy luận lại: hãy kiểm tra từng phương án, tìm bẫy ngôn ngữ, tự phản biện kết luận ban đầu rồi mới trả lời. Nêu ngắn gọn lý do loại các phương án dễ nhầm."
       : "Ưu tiên câu trả lời chính xác và súc tích."
-  ].join("\n");
+  ];
+  if (knowledgeChunks.length) {
+    prompt.push(
+      "Dưới đây là các đoạn được tìm trong slide/giáo trình của đúng môn học. Hãy ưu tiên chúng làm căn cứ, nhưng vẫn kiểm tra tính phù hợp với câu hỏi và các phương án.",
+      ...knowledgeChunks.map((chunk, index) => `[Tài liệu ${index + 1}] ${chunk.week} — ${chunk.materialName}${chunk.page ? ` — trang ${chunk.page}` : ""}\n${chunk.text}`)
+    );
+  }
+  return prompt.join("\n");
 }
 
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -89,13 +97,14 @@ export async function answerWithGemini(
   question: QuestionSnapshot,
   signal: AbortSignal,
   fetcher: Fetcher = fetch,
-  deepReasoning = false
+  deepReasoning = false,
+  knowledgeChunks: KnowledgeChunk[] = []
 ): Promise<AnswerDecision> {
   const model = modelId(settings.customModel || settings.model);
   if (!apiKey) throw new GeminiError("Chưa lưu Gemini API key.");
   if (!model) throw new GeminiError("Chưa chọn Gemini model.");
   const optionIds = question.options.map((option) => option.id);
-  const parts: Array<Record<string, unknown>> = [{ text: buildPrompt(question, deepReasoning) }];
+  const parts: Array<Record<string, unknown>> = [{ text: buildPrompt(question, deepReasoning, knowledgeChunks) }];
   for (const image of question.images) parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
   const body = {
     contents: [{ role: "user", parts }],
@@ -149,4 +158,68 @@ export async function answerWithGemini(
     }
   }
   throw lastError instanceof GeminiError ? lastError : new GeminiError(lastError?.message || "Không thể gọi Gemini.");
+}
+
+export async function answerKnowledgeWithGemini(
+  apiKey: string,
+  settings: AppSettings,
+  query: string,
+  chunks: KnowledgeChunk[],
+  signal: AbortSignal,
+  fetcher: Fetcher = fetch
+): Promise<KnowledgeSearchResponse> {
+  const model = modelId(settings.customModel || settings.model);
+  if (!apiKey) throw new GeminiError("Chưa lưu Gemini API key.");
+  if (!model) throw new GeminiError("Chưa chọn Gemini model.");
+  if (!chunks.length) return { answer: "Không tìm thấy đoạn tài liệu phù hợp.", citations: [], usedGemini: true, insufficientEvidence: true };
+  const sources = chunks.map((chunk, index) => `[${index + 1}] chunkId=${chunk.id}\n${chunk.week} — ${chunk.materialName}${chunk.page ? ` — trang ${chunk.page}` : ""}\n${chunk.text}`).join("\n\n");
+  const body = {
+    contents: [{ role: "user", parts: [{ text: [
+      "Bạn là trợ lý tra cứu tài liệu môn học. Chỉ trả lời dựa trên các đoạn nguồn bên dưới.",
+      "Không suy đoán ngoài nguồn. Nếu thiếu bằng chứng, đặt insufficientEvidence=true và nói rõ phần còn thiếu.",
+      "Trả lời bằng tiếng Việt, súc tích nhưng đủ ý. Mỗi ý quan trọng phải có số nguồn dạng [1], [2].",
+      `Câu hỏi: ${query}`,
+      "Nguồn:", sources
+    ].join("\n") }] }],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          answer: { type: "STRING" },
+          citedChunkIds: { type: "ARRAY", items: { type: "STRING", enum: chunks.map((chunk) => chunk.id) } },
+          insufficientEvidence: { type: "BOOLEAN" }
+        },
+        required: ["answer", "citedChunkIds", "insufficientEvidence"]
+      }
+    }
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const abort = () => controller.abort();
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, body: JSON.stringify(body), signal: controller.signal
+    });
+    if (!response.ok) throw new GeminiError(`Gemini API lỗi ${response.status}.`, response.status, response.status === 429 || response.status >= 500);
+    const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; promptFeedback?: { blockReason?: string } };
+    if (payload.promptFeedback?.blockReason) throw new GeminiError(`Gemini đã chặn nội dung: ${payload.promptFeedback.blockReason}.`);
+    const text = payload.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text;
+    if (!text) throw new GeminiError("Gemini không trả về nội dung.");
+    const parsed = JSON.parse(text) as { answer?: unknown; citedChunkIds?: unknown; insufficientEvidence?: unknown };
+    if (typeof parsed.answer !== "string" || !Array.isArray(parsed.citedChunkIds)) throw new GeminiError("Gemini trả về dữ liệu tra cứu không hợp lệ.");
+    const allowed = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+    const cited = [...new Set(parsed.citedChunkIds.filter((id): id is string => typeof id === "string" && allowed.has(id)))];
+    return {
+      answer: parsed.answer,
+      citations: cited.map((id) => citationFromChunk(allowed.get(id)!, chunks.findIndex((chunk) => chunk.id === id) + 1)),
+      usedGemini: true,
+      insufficientEvidence: Boolean(parsed.insufficientEvidence)
+    };
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", abort);
+  }
 }

@@ -29,6 +29,19 @@ describe("Moodle parser", () => {
     expect(weeks[1]!.activities[0]).toMatchObject({ assessmentKind: "graded" });
   });
 
+  it("discovers slides, textbooks and electronic lectures by week", () => {
+    const document = doc(`
+      <li class="section" id="section-2"><h3 class="sectionname">Tuần 2: Kỹ năng giao tiếp</h3>
+        <a href="/mod/resource/view.php?id=500415">Slide Bài 2</a>
+        <a href="/mod/resource/view.php?id=500416">Giáo trình Bài 2</a>
+        <a href="/mod/scorm/view.php?id=500417">Bài giảng điện tử Bài 2</a>
+      </li>
+    `);
+    const weeks = parseCourseActivities(document, { id: "11086", name: "Kỹ năng", url: "https://tnu.aum.edu.vn/course/view.php?id=11086", category: "Ngành chung" }, DEFAULT_SETTINGS);
+    expect(weeks[0]!.materials.map((item) => item.kind)).toEqual(["slide", "textbook", "lecture"]);
+    expect(weeks[0]!.materials[1]).toMatchObject({ name: "Giáo trình Bài 2", week: "Tuần 2: Kỹ năng giao tiếp" });
+  });
+
   it("extracts and applies a single-choice answer", () => {
     const document = doc(`<form id="responseform"><div class="que" id="question-1"><div class="info"><h3>Câu hỏi 1</h3></div><div class="qtext">SMART dùng để làm gì?</div><div class="answer"><div class="r0"><input id="a0" type="radio" name="q1"><label for="a0">A. Lập lịch</label></div><div class="r1"><input id="a1" type="radio" name="q1"><label for="a1">B. Thiết lập mục tiêu</label></div></div></div></form>`);
     const element = document.querySelector<HTMLElement>(".que")!;

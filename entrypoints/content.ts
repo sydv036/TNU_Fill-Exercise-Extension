@@ -1,5 +1,8 @@
 import { applyDecisionToElement, detectPageKind, extractQuestion, extractReviewAnswerEntries, findQuestionElement, markSuggestion, parseCourseActivities, parseDashboardCourses } from "../src/moodle";
-import type { AnswerDecision, AppState, CourseIndex, QuestionImage, QuestionSnapshot, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
+import { chunkText } from "../src/knowledge";
+import pdfLibraryUrl from "pdfjs-dist/legacy/build/pdf.mjs?url&no-inline";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url&no-inline";
+import type { AnswerDecision, AppState, CourseIndex, CourseMaterial, KnowledgeChunk, KnowledgeExtractionResult, QuestionImage, QuestionSnapshot, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
 
 let processing = false;
 let stopped = false;
@@ -54,6 +57,79 @@ async function scanCourses(): Promise<CourseIndex> {
     courses.push({ ...base, weeks: parseCourseActivities(courseDocument, base, stateResponse.data.settings) });
   }
   return { courses, scannedAt: new Date().toISOString(), sourceUrl: location.href };
+}
+
+function actualResourceUrl(document: Document, baseUrl: string): string | undefined {
+  const node = document.querySelector<HTMLElement>('object[data], embed[src], iframe[src], a[href*="/pluginfile.php/"], a[href$=".pdf"]');
+  const raw = node?.getAttribute("data") || node?.getAttribute("src") || node?.getAttribute("href");
+  if (!raw) return undefined;
+  try { return new URL(raw, baseUrl).href; } catch { return undefined; }
+}
+
+async function pdfChunks(material: CourseMaterial, bytes: ArrayBuffer): Promise<KnowledgeChunk[]> {
+  const extensionUrl = (path: string) => (browser.runtime.getURL as (value: string) => string)(path.replace(/^\//, ""));
+  const { getDocument, GlobalWorkerOptions } = await import(/* @vite-ignore */ extensionUrl(pdfLibraryUrl)) as typeof import("pdfjs-dist/legacy/build/pdf.mjs");
+  GlobalWorkerOptions.workerSrc = (browser.runtime.getURL as (path: string) => string)(pdfWorkerUrl.replace(/^\//, ""));
+  const pdf = await getDocument({ data: new Uint8Array(bytes) }).promise;
+  const chunks: KnowledgeChunk[] = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => "str" in item ? item.str : "").join(" ");
+    chunkText(text).forEach((part, index) => chunks.push({
+      id: `${material.id}:p${pageNumber}:${index}`, courseId: material.courseId, materialId: material.id,
+      materialName: material.name, materialUrl: material.url, week: material.week, kind: material.kind,
+      page: pageNumber, text: part
+    }));
+  }
+  await pdf.destroy();
+  return chunks;
+}
+
+async function extractMaterial(material: CourseMaterial): Promise<KnowledgeChunk[]> {
+  let response = await fetch(material.url, { credentials: "include", redirect: "follow" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  let contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/html")) {
+    const html = await response.text();
+    const resourceDocument = new DOMParser().parseFromString(html, "text/html");
+    const fileUrl = actualResourceUrl(resourceDocument, response.url || material.url);
+    if (fileUrl) {
+      response = await fetch(fileUrl, { credentials: "include", redirect: "follow" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    } else {
+      const text = (resourceDocument.querySelector("#region-main, main, .resourcecontent")?.textContent ?? "").replace(/\s+/g, " ").trim();
+      return chunkText(text).map((part, index) => ({
+        id: `${material.id}:html:${index}`, courseId: material.courseId, materialId: material.id,
+        materialName: material.name, materialUrl: material.url, week: material.week, kind: material.kind, text: part
+      }));
+    }
+  }
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength > 50_000_000) throw new Error("Tệp lớn hơn giới hạn 50 MB");
+  if (contentType.includes("pdf") || response.url.toLowerCase().includes(".pdf")) return pdfChunks(material, bytes);
+  throw new Error(`Chưa hỗ trợ định dạng ${contentType || "không xác định"}`);
+}
+
+async function extractCourseMaterials(materials: CourseMaterial[]): Promise<KnowledgeExtractionResult> {
+  const chunksByMaterial: KnowledgeChunk[][] = Array.from({ length: materials.length }, () => []);
+  const failedMaterials: KnowledgeExtractionResult["failedMaterials"] = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < materials.length) {
+      const index = cursor++;
+      const material = materials[index]!;
+      try {
+        chunksByMaterial[index] = await extractMaterial(material);
+      } catch (error) {
+        failedMaterials.push({ materialId: material.id, name: material.name, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, materials.length) }, worker));
+  const chunks = chunksByMaterial.flat();
+  return { chunks: chunks.slice(0, 1200), failedMaterials };
 }
 
 function currentQuestionStart(elements: HTMLElement[]): number {
@@ -150,13 +226,10 @@ async function processRun(): Promise<void> {
       let targetCmid = "";
       try { targetCmid = new URL(run.target.url).searchParams.get("id") ?? ""; } catch { /* URL thủ công không hợp lệ. */ }
       if (reviewCmid && targetCmid && reviewCmid !== targetCmid) return;
-      const marker = `tnu-gemini-review:${location.href}`;
-      if (sessionStorage.getItem(marker)) return;
       const entries = extractReviewAnswerEntries(document, run.target, location.href);
       if (!entries.length) return;
       const saved = await runtime<{ saved: number; total: number }>({ type: "SAVE_REVIEW_ANSWERS", entries });
       if (saved.ok) {
-        sessionStorage.setItem(marker, "saved");
         await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${entries.length} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
       }
       return;
@@ -238,6 +311,10 @@ export default defineContentScript({
     browser.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
       if (message.type === "SCAN_COURSES") {
         scanCourses().then((data) => sendResponse({ ok: true, data })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+        return true;
+      }
+      if (message.type === "EXTRACT_COURSE_MATERIALS") {
+        extractCourseMaterials(message.materials).then((data) => sendResponse({ ok: true, data })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
         return true;
       }
       if (message.type === "STOP_RUN") { stopped = true; sendResponse({ ok: true }); return false; }

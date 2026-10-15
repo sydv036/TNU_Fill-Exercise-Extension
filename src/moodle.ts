@@ -1,6 +1,6 @@
 import { classifyAssessment, normalizeText } from "./classifier";
 import { canonicalOptionLabel, makeMemoryEntry } from "./answer-memory";
-import type { AnswerMemoryEntry, AppSettings, CourseInfo, CourseWeek, QuestionSnapshot, QuizTarget } from "./types";
+import type { AnswerMemoryEntry, AppSettings, CourseInfo, CourseMaterial, CourseMaterialKind, CourseWeek, QuestionSnapshot, QuizTarget } from "./types";
 
 function absoluteUrl(href: string, baseUrl: string): string {
   try { return new URL(href, baseUrl).href; } catch { return href; }
@@ -8,6 +8,14 @@ function absoluteUrl(href: string, baseUrl: string): string {
 
 function cleanActivityName(value: string): string {
   return value.replace(/\s*Trắc nghiệm\s*$/i, "").replace(/\s+/g, " ").trim();
+}
+
+function materialKind(name: string, url: string): CourseMaterialKind {
+  const normalized = normalizeText(name);
+  if (normalized.includes("slide")) return "slide";
+  if (/giao trinh|tai lieu|ebook|sach/.test(normalized)) return "textbook";
+  if (url.includes("/mod/scorm/") || /bai giang dien tu|e-learning/.test(normalized)) return "lecture";
+  return "other";
 }
 
 export function parseDashboardCourses(document: Document, baseUrl: string): Array<Omit<CourseInfo, "weeks">> {
@@ -35,6 +43,7 @@ export function parseCourseActivities(
     const title = section.querySelector<HTMLElement>('h3.sectionname, [id^="sectionid-"][id$="-title"], .sectionname, h3')?.textContent?.trim()
       || `Phần ${index + 1}`;
     const activities: QuizTarget[] = [];
+    const materials: CourseMaterial[] = [];
     for (const link of section.querySelectorAll<HTMLAnchorElement>('a[href*="/mod/quiz/view.php"]')) {
       const url = absoluteUrl(link.getAttribute("href") ?? "", course.url);
       const quizId = new URL(url).searchParams.get("id") ?? crypto.randomUUID();
@@ -51,7 +60,22 @@ export function parseCourseActivities(
         source: "auto"
       });
     }
-    if (activities.length) weeks.push({ id: section.id || `section-${index}`, name: title, activities });
+    for (const link of section.querySelectorAll<HTMLAnchorElement>('a[href*="/mod/resource/view.php"], a[href*="/mod/scorm/view.php"], a[href*="/mod/page/view.php"]')) {
+      const url = absoluteUrl(link.getAttribute("href") ?? "", course.url);
+      const moduleId = new URL(url).searchParams.get("id") ?? crypto.randomUUID();
+      const name = cleanActivityName(link.textContent || link.getAttribute("title") || `Tài liệu ${moduleId}`);
+      if (!name || materials.some((item) => item.url === url)) continue;
+      materials.push({
+        id: `${course.id}:material:${moduleId}`,
+        courseId: course.id,
+        courseName: course.name,
+        week: title,
+        name,
+        url,
+        kind: materialKind(name, url)
+      });
+    }
+    if (activities.length || materials.length) weeks.push({ id: section.id || `section-${index}`, name: title, activities, materials });
   }
   return weeks;
 }
