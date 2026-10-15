@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS } from "./defaults";
-import { mergeAnswerMemory } from "./answer-memory";
-import type { AnswerMemoryEntry, AppSettings, AppState, CourseIndex, KnowledgeIndex, KnowledgeIndexSummary, LogEntry, QuizTarget, RunSession } from "./types";
+import { mergeAnswerMemory, quizKey } from "./answer-memory";
+import type { AnswerMemoryEntry, AnswerMemorySource, AppSettings, AppState, CourseIndex, KnowledgeIndex, KnowledgeIndexSummary, LogEntry, QuizTarget, RunSession } from "./types";
 
 const KEYS = {
   settings: "settings",
@@ -79,15 +79,33 @@ export async function getState(): Promise<AppState> {
   const knowledgeIndexes = (local[KEYS.knowledgeIndexes] as Record<string, KnowledgeIndex> | undefined) ?? {};
   const summaries: KnowledgeIndexSummary[] = Object.values(knowledgeIndexes).map((index) => ({
     courseId: index.courseId, courseName: index.courseName, indexedAt: index.indexedAt,
-    materialCount: index.materials.length, chunkCount: index.chunks.length, failedCount: index.failedMaterials.length
+    materialCount: index.materials.length, chunkCount: index.chunks.length, failedCount: index.failedMaterials.length,
+    indexedMaterialIds: [...new Set(index.chunks.map((chunk) => chunk.materialId))]
   }));
+  const courseIndex = local[KEYS.courseIndex] as CourseIndex | undefined;
+  const activities = courseIndex?.courses.flatMap((course) => course.weeks.flatMap((week) => week.activities.map((activity) => ({ course, activity })))) ?? [];
+  const memorySources = new Map<string, AnswerMemorySource>();
+  for (const entry of answerMemory) {
+    const matched = activities.find(({ activity }) => quizKey(activity) === entry.quizKey);
+    const current = memorySources.get(entry.quizKey);
+    memorySources.set(entry.quizKey, {
+      quizKey: entry.quizKey,
+      courseId: entry.courseId,
+      courseName: entry.courseName || matched?.course.name || `Môn ${entry.courseId}`,
+      week: entry.week || matched?.activity.week || "Phần đã lưu",
+      quizName: entry.quizName || matched?.activity.name || entry.quizKey,
+      answerCount: (current?.answerCount ?? 0) + 1,
+      learnedAt: current && current.learnedAt > entry.learnedAt ? current.learnedAt : entry.learnedAt
+    });
+  }
   return {
     settings: await getSettings(),
     apiKeyPresent: Boolean(local[KEYS.apiKey]),
-    courseIndex: local[KEYS.courseIndex] as CourseIndex | undefined,
+    courseIndex,
     queue: (local[KEYS.queue] as QuizTarget[] | undefined) ?? [],
     logs: (local[KEYS.logs] as LogEntry[] | undefined) ?? [],
     answerMemoryCount: answerMemory.length,
+    answerMemorySources: [...memorySources.values()].sort((left, right) => left.courseName.localeCompare(right.courseName, "vi") || left.week.localeCompare(right.week, "vi") || left.quizName.localeCompare(right.quizName, "vi")),
     knowledgeIndexes: summaries,
     storageBytes: await browser.storage.local.getBytesInUse(null),
     run: await getRun()

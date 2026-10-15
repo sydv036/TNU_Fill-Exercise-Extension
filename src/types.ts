@@ -41,18 +41,42 @@ export interface AnswerDecision {
   needsHumanReview: boolean;
   source?: "gemini" | "memory";
   reasoningPass?: boolean;
+  verification?: AnswerVerification;
+}
+
+export interface AnswerVerification {
+  status: "agreed" | "conflict" | "uncertain" | "user_confirmed";
+  primarySource: "gemini" | "memory";
+  primaryOptionIds: string[];
+  primaryConfidence: number;
+  verifierOptionIds: string[];
+  verifierConfidence: number;
+  verifierReason: string;
 }
 
 export interface AnswerMemoryEntry {
   id: string;
   quizKey: string;
   courseId: string;
+  courseName?: string;
+  week?: string;
+  quizName?: string;
   questionFingerprint: string;
   prompt: string;
   questionType: QuestionType;
   correctOptionLabels: string[];
   learnedAt: string;
   sourceUrl: string;
+}
+
+export interface AnswerMemorySource {
+  quizKey: string;
+  courseId: string;
+  courseName: string;
+  week: string;
+  quizName: string;
+  answerCount: number;
+  learnedAt: string;
 }
 
 export interface QuizTarget {
@@ -110,6 +134,7 @@ export interface KnowledgeIndexSummary {
   materialCount: number;
   chunkCount: number;
   failedCount: number;
+  indexedMaterialIds: string[];
 }
 
 export interface KnowledgeCitation {
@@ -167,6 +192,9 @@ export interface RunSession {
   totalOnPage: number;
   processedQuestionIds: string[];
   startAnchorUsed: boolean;
+  memorySourceQuizKey?: string | null;
+  reviewEveryAnswer: boolean;
+  knowledgeMaterialIds: string[];
   pendingDecision?: PendingDecision;
   currentQuestionSnapshot?: QuestionSnapshot;
   message: string;
@@ -206,6 +234,7 @@ export interface AppState {
   run?: RunSession;
   logs: LogEntry[];
   answerMemoryCount: number;
+  answerMemorySources: AnswerMemorySource[];
   knowledgeIndexes: KnowledgeIndexSummary[];
   storageBytes: number;
 }
@@ -226,12 +255,15 @@ export type RuntimeMessage =
   | { type: "VALIDATE_API_KEY" }
   | { type: "SCAN_COURSES" }
   | { type: "SAVE_QUEUE"; queue: QuizTarget[] }
-  | { type: "START_RUN"; target: QuizTarget; mode: RunMode }
+  | { type: "START_RUN"; target: QuizTarget; mode: RunMode; memorySourceQuizKey: string | null; reviewEveryAnswer: boolean; knowledgeMaterialIds: string[] }
   | { type: "STOP_RUN" }
   | { type: "RESUME_RUN" }
   | { type: "RETRY_QUESTION" }
   | { type: "SKIP_QUESTION" }
   | { type: "APPLY_SUGGESTION" }
+  | { type: "VERIFY_QUESTION" }
+  | { type: "CONFIRM_VERIFICATION"; choice: "primary" | "verifier" }
+  | { type: "SHOW_VERIFICATION"; questionId: string; selectedOptionIds: string[] }
   | { type: "ANSWER_QUESTION"; question: QuestionSnapshot }
   | { type: "SAVE_REVIEW_ANSWERS"; entries: AnswerMemoryEntry[] }
   | { type: "CLEAR_ANSWER_MEMORY" }

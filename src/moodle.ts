@@ -121,8 +121,8 @@ export function extractQuestion(element: HTMLElement, index: number): QuestionSn
 export function detectPageKind(url: string, document: Document): "dashboard" | "course" | "quiz-view" | "attempt" | "summary" | "review" | "other" {
   const path = new URL(url).pathname;
   if (path.includes("/mod/quiz/summary.php")) return "summary";
-  if (path.includes("/mod/quiz/attempt.php") || document.querySelector("#responseform .que")) return "attempt";
   if (path.includes("/mod/quiz/review.php")) return "review";
+  if (path.includes("/mod/quiz/attempt.php") || document.querySelector("#responseform .que")) return "attempt";
   if (path.includes("/mod/quiz/view.php")) return "quiz-view";
   if (path.includes("/course/view.php")) return "course";
   if (path === "/my/" || path.includes("/my/index.php") || path.includes("/my/courses.php")) return "dashboard";

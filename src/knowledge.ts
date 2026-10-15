@@ -41,6 +41,12 @@ export function searchKnowledge(chunks: KnowledgeChunk[], query: string, limit =
     .map((item) => item.chunk);
 }
 
+export function searchSelectedKnowledge(chunks: KnowledgeChunk[], materialIds: string[], query: string, limit = 8): KnowledgeChunk[] {
+  if (!materialIds.length) return [];
+  const allowed = new Set(materialIds);
+  return searchKnowledge(chunks.filter((chunk) => allowed.has(chunk.materialId)), query, limit);
+}
+
 export function citationFromChunk(chunk: KnowledgeChunk, sourceNumber?: number): KnowledgeCitation {
   return {
     chunkId: chunk.id,

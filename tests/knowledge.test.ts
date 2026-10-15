@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkText, searchKnowledge } from "../src/knowledge";
+import { chunkText, searchKnowledge, searchSelectedKnowledge } from "../src/knowledge";
 import type { KnowledgeChunk } from "../src/types";
 
 const chunks: KnowledgeChunk[] = [
@@ -20,5 +20,14 @@ describe("Course knowledge search", () => {
     const result = chunkText("Nội dung bài học. ".repeat(500), 500);
     expect(result.length).toBeGreaterThan(5);
     expect(result.every((item) => item.length <= 500)).toBe(true);
+  });
+
+  it("searches only the materials explicitly attached to the run", () => {
+    expect(searchSelectedKnowledge(chunks, ["m1"], "mục tiêu SMART", 8)).toEqual([]);
+    expect(searchSelectedKnowledge(chunks, ["m2"], "mục tiêu SMART", 8).map((chunk) => chunk.id)).toEqual(["smart"]);
+  });
+
+  it("does not provide knowledge when no material is attached", () => {
+    expect(searchSelectedKnowledge(chunks, [], "Johari", 8)).toEqual([]);
   });
 });

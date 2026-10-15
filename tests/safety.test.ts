@@ -6,6 +6,7 @@ describe("submission safety", () => {
   const contentSource = readFileSync(new URL("../entrypoints/content.ts", import.meta.url), "utf8");
   const storageSource = readFileSync(new URL("../src/storage.ts", import.meta.url), "utf8");
   const panelSource = readFileSync(new URL("../entrypoints/sidepanel/App.tsx", import.meta.url), "utf8");
+  const backgroundSource = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
 
   it("does not target Moodle final-submit controls", () => {
     expect(contentSource).not.toMatch(/querySelector[^\n]*submitall/i);
@@ -26,5 +27,11 @@ describe("submission safety", () => {
   it("resets both persistent and session extension storage", () => {
     expect(storageSource).toContain("browser.storage.local.clear()");
     expect(storageSource).toContain("browser.storage.session.clear()");
+  });
+
+  it("requires an agreed independent check before applying a graded answer", () => {
+    expect(backgroundSource).toContain('assessmentKind !== "practice"');
+    expect(backgroundSource).toContain('["agreed", "user_confirmed"]');
+    expect(backgroundSource).toContain("Bài kiểm tra chỉ được áp dụng sau khi kiểm tra kép đồng thuận.");
   });
 });

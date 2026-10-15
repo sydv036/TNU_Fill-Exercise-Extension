@@ -173,7 +173,7 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
     const element = elements[index]!;
     let question = extractQuestion(element, index);
     if (processed.includes(question.id)) continue;
-    await runtime({ type: "UPDATE_RUN", patch: { currentQuestion: index + 1, currentQuestionSnapshot: { ...question, images: [] }, message: `Đang tìm đáp án cho ${question.number}...` } });
+    await runtime({ type: "UPDATE_RUN", patch: { currentQuestion: index + 1, currentQuestionSnapshot: { ...question, images: [] }, message: `Đang đối chiếu bộ nhớ đáp án cho ${question.number}...` } });
     if (question.type === "unsupported" || !question.options.length) {
       await pauseAtQuestion(run, question, `${question.number} có loại chưa được hỗ trợ. Hãy tự xử lý rồi chọn Bỏ qua.`);
       return;
@@ -185,7 +185,7 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
       return;
     }
     const decision = answer.data;
-    const needsConfirmation = run.target.assessmentKind !== "practice" || decision.needsHumanReview || decision.confidence < state.settings.confidenceThreshold;
+    const needsConfirmation = run.target.assessmentKind !== "practice" || run.reviewEveryAnswer || decision.needsHumanReview || decision.confidence < state.settings.confidenceThreshold;
     if (needsConfirmation) {
       markSuggestion(element, decision.selectedOptionIds);
       const source = decision.source === "memory" ? "Bộ nhớ đáp án đúng" : decision.reasoningPass ? "Gemini sau khi suy luận lại" : "Gemini";
@@ -319,6 +319,12 @@ export default defineContentScript({
       }
       if (message.type === "STOP_RUN") { stopped = true; sendResponse({ ok: true }); return false; }
       if (message.type === "APPLY_SUGGESTION") { applyPending().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: String(error) })); return true; }
+      if (message.type === "SHOW_VERIFICATION") {
+        const element = findQuestionElement(message.questionId);
+        if (element) markSuggestion(element, message.selectedOptionIds);
+        sendResponse({ ok: true });
+        return false;
+      }
       if (message.type === "SKIP_QUESTION") { skipPending().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: String(error) })); return true; }
       if (["RESUME_RUN", "RETRY_QUESTION"].includes(message.type)) { void processRun(); sendResponse({ ok: true }); return false; }
       return false;

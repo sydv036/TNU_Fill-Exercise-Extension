@@ -1,6 +1,7 @@
 import { answerKnowledgeWithGemini, answerWithGemini, listGeminiModels } from "../src/gemini";
 import { findMemoryDecision } from "../src/answer-memory";
-import { citationFromChunk, searchKnowledge } from "../src/knowledge";
+import { citationFromChunk, searchKnowledge, searchSelectedKnowledge } from "../src/knowledge";
+import { confirmVerificationChoice, reconcileIndependentCheck } from "../src/verification";
 import {
   appendLog, clearAllData, clearAnswerMemory, clearKnowledgeIndex, deleteApiKey, getAnswerMemory, getApiKey, getKnowledgeIndex, getRun, getSettings, getState,
   markReviewCaptured, saveAnswerMemory, saveApiKey, saveCourseIndex, saveKnowledgeIndex, saveQueue, saveRun, saveSettings, secureLocalStorage, updateRun, wasReviewCaptured
@@ -74,11 +75,24 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       await saveQueue(message.queue);
       return { ok: true };
     case "START_RUN": {
+      if (message.memorySourceQuizKey) {
+        const validSource = (await getAnswerMemory()).some((entry) => entry.courseId === message.target.courseId && entry.quizKey === message.memorySourceQuizKey);
+        if (!validSource) throw new Error("Phần đáp án đã chọn không còn tồn tại trong bộ nhớ.");
+      }
+      const requestedMaterialIds = [...new Set(message.knowledgeMaterialIds)];
+      if (requestedMaterialIds.length) {
+        const knowledgeIndex = await getKnowledgeIndex(message.target.courseId);
+        const indexedIds = new Set(knowledgeIndex?.chunks.map((chunk) => chunk.materialId) ?? []);
+        if (requestedMaterialIds.some((id) => !indexedIds.has(id))) throw new Error("Có tài liệu đã chọn chưa được lập chỉ mục. Hãy cập nhật kho tài liệu rồi thử lại.");
+      }
       const now = new Date().toISOString();
       const run: RunSession = {
         id: crypto.randomUUID(), target: message.target, mode: message.mode, status: "preparing",
         startedAt: now, updatedAt: now, page: 1, currentQuestion: 0, totalOnPage: 0,
-        processedQuestionIds: [], startAnchorUsed: false, message: "Đang mở bài..."
+        processedQuestionIds: [], startAnchorUsed: false, memorySourceQuizKey: message.memorySourceQuizKey,
+        reviewEveryAnswer: message.target.assessmentKind !== "practice" || message.reviewEveryAnswer || requestedMaterialIds.length > 0,
+        knowledgeMaterialIds: requestedMaterialIds,
+        message: message.memorySourceQuizKey ? "Đang mở bài với phần đáp án đã chọn..." : "Đang mở bài; câu chưa biết sẽ dùng Gemini..."
       };
       await saveRun(run);
       await appendLog("info", `Bắt đầu ${message.target.name} (${message.target.assessmentKind}).`);
@@ -106,17 +120,71 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
     case "SKIP_QUESTION":
       await sendToActiveTab({ type: "SKIP_QUESTION" });
       return { ok: true };
-    case "APPLY_SUGGESTION":
+    case "APPLY_SUGGESTION": {
+      const run = await getRun();
+      if (run?.target.assessmentKind !== "practice" && !["agreed", "user_confirmed"].includes(run?.pendingDecision?.decision.verification?.status ?? "")) {
+        throw new Error("Bài kiểm tra chỉ được áp dụng sau khi kiểm tra kép đồng thuận.");
+      }
       await sendToActiveTab({ type: "APPLY_SUGGESTION" });
       return { ok: true };
+    }
+    case "CONFIRM_VERIFICATION": {
+      const run = await getRun();
+      const pending = run?.pendingDecision;
+      if (!run || !pending) throw new Error("Không có câu hỏi đang chờ xác nhận.");
+      const decision = confirmVerificationChoice(pending.decision, message.choice);
+      const allowed = new Set(pending.question.options.map((option) => option.id));
+      if (decision.selectedOptionIds.some((id) => !allowed.has(id))) throw new Error("Phương án xác nhận không còn tồn tại trên câu hỏi.");
+      await updateRun({ status: "awaiting_user", message: `${pending.question.number}: đã xác nhận thủ công, đang tiếp tục...`, pendingDecision: { question: pending.question, decision } });
+      await appendLog("warning", `${pending.question.number}: người dùng xác nhận thủ công ${message.choice === "primary" ? "gợi ý ban đầu" : "kết quả Gemini kiểm tra lại"}.`);
+      await sendToActiveTab({ type: "APPLY_SUGGESTION" });
+      return { ok: true };
+    }
+    case "VERIFY_QUESTION": {
+      const run = await getRun();
+      const pending = run?.pendingDecision;
+      if (!run || !pending) throw new Error("Không có câu hỏi đang chờ để kiểm tra lại.");
+      const previousPrimaryIds = pending.decision.verification?.primaryOptionIds ?? pending.decision.selectedOptionIds;
+      if (!previousPrimaryIds.length) throw new Error("Câu này chưa có đáp án ban đầu để kiểm tra kép.");
+      const cached = findMemoryDecision(await getAnswerMemory(), run.target, pending.question, run.memorySourceQuizKey);
+      const primary = cached ?? { ...pending.decision, selectedOptionIds: previousPrimaryIds, verification: undefined };
+      const controller = new AbortController();
+      const requestId = `${run.id}:${pending.question.id}:verify`;
+      activeRequests.get(requestId)?.abort();
+      activeRequests.set(requestId, controller);
+      try {
+        const settings = await getSettings();
+        let knowledgeChunks: KnowledgeChunk[] = [];
+        if (run.knowledgeMaterialIds?.length) {
+          const knowledgeIndex = await getKnowledgeIndex(run.target.courseId);
+          if (knowledgeIndex) {
+            const query = [pending.question.prompt, ...pending.question.options.map((option) => option.label)].join(" ");
+            knowledgeChunks = searchSelectedKnowledge(knowledgeIndex.chunks, run.knowledgeMaterialIds, query, 5);
+          }
+        }
+        await updateRun({ message: `${pending.question.number}: Gemini đang phân tích độc lập để kiểm tra kép...` });
+        const verifier = await answerWithGemini(await getApiKey(), settings, pending.question, controller.signal, fetch, true, knowledgeChunks);
+        const decision = reconcileIndependentCheck(primary, verifier, settings.confidenceThreshold);
+        const statusMessage = decision.verification?.status === "agreed"
+          ? `${pending.question.number}: kiểm tra kép đồng thuận, có thể áp dụng.`
+          : `${pending.question.number}: kiểm tra kép chưa an toàn, đã khóa áp dụng tự động.`;
+        await updateRun({ status: "awaiting_user", message: statusMessage, pendingDecision: { question: pending.question, decision } });
+        await sendToActiveTab({ type: "SHOW_VERIFICATION", questionId: pending.question.id, selectedOptionIds: decision.selectedOptionIds }).catch(() => undefined);
+        await appendLog(decision.verification?.status === "agreed" ? "success" : "warning", statusMessage);
+        return { ok: true, data: decision };
+      } finally {
+        activeRequests.delete(requestId);
+      }
+    }
     case "ANSWER_QUESTION": {
       const run = await getRun();
       if (!run || run.status === "paused") throw new Error("Phiên chạy không còn hoạt động.");
-      const remembered = findMemoryDecision(await getAnswerMemory(), run.target, message.question);
+      const remembered = findMemoryDecision(await getAnswerMemory(), run.target, message.question, run.memorySourceQuizKey);
       if (remembered) {
         await appendLog("success", `Tìm thấy đáp án đã chấm đúng cho ${message.question.number}.`);
         return { ok: true, data: remembered };
       }
+      await updateRun({ message: `${message.question.number}: không có đáp án đã lưu phù hợp, đang hỏi Gemini...` });
       const controller = new AbortController();
       const requestId = `${run.id}:${message.question.id}`;
       activeRequests.set(requestId, controller);
@@ -124,11 +192,11 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
         const settings = await getSettings();
         const apiKey = await getApiKey();
         let knowledgeChunks: KnowledgeChunk[] = [];
-        if (settings.useCourseKnowledgeForAnswers) {
+        if (run.knowledgeMaterialIds?.length) {
           const knowledgeIndex = await getKnowledgeIndex(run.target.courseId);
           if (knowledgeIndex) {
             const query = [message.question.prompt, ...message.question.options.map((option) => option.label)].join(" ");
-            knowledgeChunks = searchKnowledge(knowledgeIndex.chunks, query, 5);
+            knowledgeChunks = searchSelectedKnowledge(knowledgeIndex.chunks, run.knowledgeMaterialIds, query, 5);
           }
         }
         let decision = await answerWithGemini(apiKey, settings, message.question, controller.signal, fetch, false, knowledgeChunks);

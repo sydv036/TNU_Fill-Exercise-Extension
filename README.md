@@ -8,6 +8,10 @@ Extension Manifest V3 dành cho Chrome/Edge, hỗ trợ quét khóa học TNU, d
 - Hai chế độ xử lý câu Gemini chưa chắc chắn: **Tự suy luận lại** hoặc **Hỏi tôi**.
 - Tab **Đang chạy** hiển thị trực tiếp câu hỏi hiện tại, các lựa chọn và phương án đang được gợi ý.
 - Sau khi người dùng tự nộp bài và Moodle mở trang xem lại, extension lưu các đáp án được Moodle xác nhận đúng.
+- Bộ nhớ được chia theo nguồn có tên đầy đủ dạng **Khóa học # Tuần # Bài**; trước khi chạy, người dùng chọn đúng phần đã làm để chỉ đối chiếu trong phần đó.
+- Bài kiểm tra bắt buộc dừng từng câu và chỉ cho **Áp dụng** sau khi nút **Kiểm tra lại** xác nhận cache/gợi ý ban đầu đồng thuận với một lượt Gemini suy luận độc lập; nếu mâu thuẫn hoặc thiếu tin cậy, extension khóa áp dụng tự động.
+- Có thể bật chế độ dừng từng câu trên bài luyện tập để thử luồng kiểm tra kép mà không cần dùng bài kiểm tra thật.
+- Ở bước chuẩn bị, người dùng chọn chính xác từng slide/giáo trình muốn đính kèm. Chỉ các đoạn liên quan từ tài liệu đã chọn mới được đưa vào lượt trả lời và lượt kiểm tra lại của Gemini; không chọn thì Gemini không nhận tài liệu.
 - Lần làm sau, bộ nhớ đáp án được đối chiếu theo nội dung câu hỏi và nội dung lựa chọn, nên không phụ thuộc thứ tự A/B/C/D.
 - Có thể xem số đáp án đã nhớ hoặc xóa toàn bộ bộ nhớ trong tab **Cài đặt**.
 - Tab **Cài đặt** hiển thị dung lượng cục bộ, cho phép xóa riêng API key hoặc reset toàn bộ dữ liệu extension với bước xác nhận chống bấm nhầm.

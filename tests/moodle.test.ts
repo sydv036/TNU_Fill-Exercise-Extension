@@ -7,6 +7,11 @@ function doc(html: string): Document {
 }
 
 describe("Moodle parser", () => {
+  it("recognizes review URLs even when the page contains a response form", () => {
+    const document = doc('<form id="responseform"><div class="que"></div></form>');
+    expect(detectPageKind("https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=1&cmid=2", document)).toBe("review");
+  });
+
   it("deduplicates courses from the dashboard", () => {
     const document = doc(`
       <div class="course-info-container"><a href="/course/view.php?id=11086">Phát triển kỹ năng cá nhân - 260920</a><span>Danh mục khóa học Ngành chung</span></div>

@@ -66,4 +66,39 @@ describe("answer memory", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ id: first.id, sourceUrl: "review-2" });
   });
+
+  it("reuses an exact remembered question elsewhere in the same course", () => {
+    const learnedQuestion: QuestionSnapshot = {
+      id: "practice-q1", number: "1", type: "single", prompt: "Mục tiêu SMART cần có đặc điểm nào?", images: [],
+      options: [{ id: "option_0", label: "A. Đo lường được", selected: true }, { id: "option_1", label: "B. Càng chung chung càng tốt", selected: false }]
+    };
+    const entry = makeMemoryEntry(target, learnedQuestion, ["A. Đo lường được"], "review");
+    const anotherQuiz = { ...target, id: "11086:999", url: "https://tnu.aum.edu.vn/mod/quiz/view.php?id=999", name: "Bài kiểm tra" };
+    const shuffled = {
+      ...learnedQuestion,
+      id: "graded-q7",
+      options: [{ id: "option_0", label: "A. Càng chung chung càng tốt", selected: false }, { id: "option_1", label: "B. Đo lường được", selected: false }]
+    };
+    expect(findMemoryDecision([entry], anotherQuiz, shuffled, entry.quizKey)).toMatchObject({ selectedOptionIds: ["option_1"], source: "memory" });
+  });
+
+  it("does not search another saved section unless the user selects it", () => {
+    const question: QuestionSnapshot = {
+      id: "q1", number: "1", type: "single", prompt: "Mục tiêu SMART là gì?", images: [],
+      options: [{ id: "option_0", label: "A. Mục tiêu đo lường được", selected: true }]
+    };
+    const entry = makeMemoryEntry(target, question, ["A. Mục tiêu đo lường được"], "review");
+    const anotherQuiz = { ...target, url: "https://tnu.aum.edu.vn/mod/quiz/view.php?id=999" };
+    expect(findMemoryDecision([entry], anotherQuiz, question)).toBeUndefined();
+    expect(findMemoryDecision([entry], anotherQuiz, question, entry.quizKey)).toMatchObject({ source: "memory" });
+  });
+
+  it("does not reuse course memory across different courses", () => {
+    const question: QuestionSnapshot = {
+      id: "q1", number: "1", type: "single", prompt: "Khái niệm này là gì?", images: [],
+      options: [{ id: "option_0", label: "A. Đáp án", selected: true }]
+    };
+    const entry = makeMemoryEntry(target, question, ["A. Đáp án"], "review");
+    expect(findMemoryDecision([entry], { ...target, courseId: "different-course" }, question)).toBeUndefined();
+  });
 });
