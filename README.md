@@ -12,6 +12,8 @@ Extension Manifest V3 dành cho Chrome/Edge, hỗ trợ quét khóa học TNU, d
 - Bài kiểm tra bắt buộc dừng từng câu và chỉ cho **Áp dụng** sau khi nút **Kiểm tra lại** xác nhận cache/gợi ý ban đầu đồng thuận với một lượt Gemini suy luận độc lập; nếu mâu thuẫn hoặc thiếu tin cậy, extension khóa áp dụng tự động.
 - Có thể bật chế độ dừng từng câu trên bài luyện tập để thử luồng kiểm tra kép mà không cần dùng bài kiểm tra thật.
 - Ở bước chuẩn bị, người dùng chọn chính xác từng slide/giáo trình muốn đính kèm. Chỉ các đoạn liên quan từ tài liệu đã chọn mới được đưa vào lượt trả lời và lượt kiểm tra lại của Gemini; không chọn thì Gemini không nhận tài liệu.
+- Có thể chọn nhiều bài luyện tập cùng môn thành một chuỗi thu thập cache. Extension tự áp dụng mọi đáp án hợp lệ mà không dừng vì Gemini thiếu chắc chắn, luôn dừng để người dùng tự nộp, lưu đáp án từ trang xem lại rồi chuyển sang bài tiếp theo. Lỗi thật sự hoặc dạng câu chưa hỗ trợ vẫn dừng để tránh điền sai âm thầm.
+- Trước bài kiểm tra có thể chọn nhiều kho cache; chỉ dùng khi các kho chứa câu đó đồng thuận, còn mâu thuẫn sẽ chuyển sang Gemini/tài liệu.
 - Lần làm sau, bộ nhớ đáp án được đối chiếu theo nội dung câu hỏi và nội dung lựa chọn, nên không phụ thuộc thứ tự A/B/C/D.
 - Có thể xem số đáp án đã nhớ hoặc xóa toàn bộ bộ nhớ trong tab **Cài đặt**.
 - Tab **Cài đặt** hiển thị dung lượng cục bộ, cho phép xóa riêng API key hoặc reset toàn bộ dữ liệu extension với bước xác nhận chống bấm nhầm.

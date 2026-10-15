@@ -193,8 +193,10 @@ export interface RunSession {
   processedQuestionIds: string[];
   startAnchorUsed: boolean;
   memorySourceQuizKey?: string | null;
+  memorySourceQuizKeys: string[];
   reviewEveryAnswer: boolean;
   knowledgeMaterialIds: string[];
+  practiceBatch?: { targets: QuizTarget[]; currentIndex: number };
   pendingDecision?: PendingDecision;
   currentQuestionSnapshot?: QuestionSnapshot;
   message: string;
@@ -255,7 +257,7 @@ export type RuntimeMessage =
   | { type: "VALIDATE_API_KEY" }
   | { type: "SCAN_COURSES" }
   | { type: "SAVE_QUEUE"; queue: QuizTarget[] }
-  | { type: "START_RUN"; target: QuizTarget; mode: RunMode; memorySourceQuizKey: string | null; reviewEveryAnswer: boolean; knowledgeMaterialIds: string[] }
+  | { type: "START_RUN"; target: QuizTarget; mode: RunMode; memorySourceQuizKeys: string[]; reviewEveryAnswer: boolean; knowledgeMaterialIds: string[]; batchTargets?: QuizTarget[] }
   | { type: "STOP_RUN" }
   | { type: "RESUME_RUN" }
   | { type: "RETRY_QUESTION" }
@@ -265,7 +267,7 @@ export type RuntimeMessage =
   | { type: "CONFIRM_VERIFICATION"; choice: "primary" | "verifier" }
   | { type: "SHOW_VERIFICATION"; questionId: string; selectedOptionIds: string[] }
   | { type: "ANSWER_QUESTION"; question: QuestionSnapshot }
-  | { type: "SAVE_REVIEW_ANSWERS"; entries: AnswerMemoryEntry[] }
+  | { type: "SAVE_REVIEW_ANSWERS"; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
   | { type: "CLEAR_ANSWER_MEMORY" }
   | { type: "CLEAR_ALL_DATA" }
   | { type: "INDEX_COURSE_MATERIALS"; courseId: string }

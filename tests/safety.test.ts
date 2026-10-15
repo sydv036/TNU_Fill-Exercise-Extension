@@ -15,7 +15,8 @@ describe("submission safety", () => {
 
   it("handles summary as a terminal state", () => {
     expect(contentSource).toContain('if (kind === "summary")');
-    expect(contentSource).toContain('status: "completed"');
+    expect(contentSource).toContain('status: inBatch ? "awaiting_user" : "completed"');
+    expect(contentSource).toContain("Extension đã dừng ở trang tổng kết và chưa nộp bài.");
   });
 
   it("shows the current question without persisting image base64 in session state", () => {

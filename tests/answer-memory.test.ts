@@ -21,6 +21,13 @@ describe("answer memory", () => {
     expect(entries[0]!.correctOptionLabels).toEqual(["thiet lap muc tieu"]);
   });
 
+  it("does not confuse a short option with a longer answer in review feedback", () => {
+    const document = doc(`<div class="que" id="q1"><div class="qtext">Kết quả bằng bao nhiêu?</div><div class="answer"><div><input id="a0" type="radio"><label for="a0">A. 1</label></div><div><input id="a1" type="radio"><label for="a1">B. 10</label></div></div><div class="rightanswer">Đáp án đúng là: 10</div></div>`);
+    const entries = extractReviewAnswerEntries(document, target, "https://tnu.aum.edu.vn/mod/quiz/review.php?cmid=500414");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.correctOptionLabels).toEqual(["10"]);
+  });
+
   it("matches a remembered answer even when Moodle shuffles option order and letters", () => {
     const oldQuestion: QuestionSnapshot = {
       id: "q1", number: "Câu 1", type: "single", prompt: "SMART dùng để làm gì?", images: [],
@@ -100,5 +107,27 @@ describe("answer memory", () => {
     };
     const entry = makeMemoryEntry(target, question, ["A. Đáp án"], "review");
     expect(findMemoryDecision([entry], { ...target, courseId: "different-course" }, question)).toBeUndefined();
+  });
+
+  it("combines multiple selected caches when they agree", () => {
+    const question: QuestionSnapshot = {
+      id: "q", number: "1", type: "single", prompt: "Kỹ năng lắng nghe là gì?", images: [],
+      options: [{ id: "option_0", label: "A. Tiếp nhận chủ động", selected: false }, { id: "option_1", label: "B. Chỉ nghe âm thanh", selected: false }]
+    };
+    const first = makeMemoryEntry(target, question, ["A. Tiếp nhận chủ động"], "review-1");
+    const otherTarget = { ...target, url: "https://tnu.aum.edu.vn/mod/quiz/view.php?id=999", name: "Bài luyện tập 2" };
+    const second = makeMemoryEntry(otherTarget, question, ["A. Tiếp nhận chủ động"], "review-2");
+    expect(findMemoryDecision([first, second], target, question, [first.quizKey, second.quizKey])).toMatchObject({ selectedOptionIds: ["option_0"], source: "memory" });
+  });
+
+  it("does not trust selected caches that conflict on the same question", () => {
+    const question: QuestionSnapshot = {
+      id: "q", number: "1", type: "single", prompt: "Một câu dùng lại", images: [],
+      options: [{ id: "option_0", label: "A. Đáp án một", selected: false }, { id: "option_1", label: "B. Đáp án hai", selected: false }]
+    };
+    const first = makeMemoryEntry(target, question, ["A. Đáp án một"], "review-1");
+    const otherTarget = { ...target, url: "https://tnu.aum.edu.vn/mod/quiz/view.php?id=999", name: "Bài luyện tập 2" };
+    const second = makeMemoryEntry(otherTarget, question, ["B. Đáp án hai"], "review-2");
+    expect(findMemoryDecision([first, second], target, question, [first.quizKey, second.quizKey])).toBeUndefined();
   });
 });

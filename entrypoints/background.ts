@@ -1,6 +1,8 @@
 import { answerKnowledgeWithGemini, answerWithGemini, listGeminiModels } from "../src/gemini";
-import { findMemoryDecision } from "../src/answer-memory";
+import { findMemoryDecision, quizKey } from "../src/answer-memory";
 import { citationFromChunk, searchKnowledge, searchSelectedKnowledge } from "../src/knowledge";
+import { isAttemptForTarget } from "../src/quiz-navigation";
+import { practiceBatchReviewStep } from "../src/run-policy";
 import { confirmVerificationChoice, reconcileIndependentCheck } from "../src/verification";
 import {
   appendLog, clearAllData, clearAnswerMemory, clearKnowledgeIndex, deleteApiKey, getAnswerMemory, getApiKey, getKnowledgeIndex, getRun, getSettings, getState,
@@ -75,9 +77,21 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       await saveQueue(message.queue);
       return { ok: true };
     case "START_RUN": {
-      if (message.memorySourceQuizKey) {
-        const validSource = (await getAnswerMemory()).some((entry) => entry.courseId === message.target.courseId && entry.quizKey === message.memorySourceQuizKey);
-        if (!validSource) throw new Error("Phần đáp án đã chọn không còn tồn tại trong bộ nhớ.");
+      const tab = await activeTnuTab();
+      if (message.mode === "from_current" && !isAttemptForTarget(tab.url ?? "", message.target.url)) {
+        throw new Error("“Từ câu hiện tại” chỉ dùng khi tab đang mở đúng bài đã chọn. Hãy mở đúng bài rồi thử lại.");
+      }
+      const requestedMemoryKeys = [...new Set(message.memorySourceQuizKeys)];
+      if (requestedMemoryKeys.length) {
+        const availableKeys = new Set((await getAnswerMemory()).filter((entry) => entry.courseId === message.target.courseId).map((entry) => entry.quizKey));
+        if (requestedMemoryKeys.some((key) => !availableKeys.has(key))) throw new Error("Có phần đáp án đã chọn không còn tồn tại trong bộ nhớ.");
+      }
+      const batchTargets = message.batchTargets?.length ? message.batchTargets : undefined;
+      if (batchTargets && (batchTargets.some((target) => target.assessmentKind !== "practice") || batchTargets.some((target) => target.courseId !== message.target.courseId))) {
+        throw new Error("Chuỗi tự động chỉ nhận các bài luyện tập trong cùng một môn.");
+      }
+      if (batchTargets && (message.mode !== "from_start" || batchTargets[0]?.id !== message.target.id || new Set(batchTargets.map((target) => target.id)).size !== batchTargets.length)) {
+        throw new Error("Chuỗi luyện tập không hợp lệ. Hãy chọn lại danh sách bài.");
       }
       const requestedMaterialIds = [...new Set(message.knowledgeMaterialIds)];
       if (requestedMaterialIds.length) {
@@ -86,18 +100,20 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
         if (requestedMaterialIds.some((id) => !indexedIds.has(id))) throw new Error("Có tài liệu đã chọn chưa được lập chỉ mục. Hãy cập nhật kho tài liệu rồi thử lại.");
       }
       const now = new Date().toISOString();
+      const isPracticeBatch = Boolean(batchTargets);
       const run: RunSession = {
         id: crypto.randomUUID(), target: message.target, mode: message.mode, status: "preparing",
         startedAt: now, updatedAt: now, page: 1, currentQuestion: 0, totalOnPage: 0,
-        processedQuestionIds: [], startAnchorUsed: false, memorySourceQuizKey: message.memorySourceQuizKey,
-        reviewEveryAnswer: message.target.assessmentKind !== "practice" || message.reviewEveryAnswer || requestedMaterialIds.length > 0,
+        processedQuestionIds: [], startAnchorUsed: false, memorySourceQuizKey: requestedMemoryKeys[0] ?? null,
+        memorySourceQuizKeys: requestedMemoryKeys,
+        reviewEveryAnswer: isPracticeBatch ? false : message.target.assessmentKind !== "practice" || message.reviewEveryAnswer || requestedMaterialIds.length > 0,
         knowledgeMaterialIds: requestedMaterialIds,
-        message: message.memorySourceQuizKey ? "Đang mở bài với phần đáp án đã chọn..." : "Đang mở bài; câu chưa biết sẽ dùng Gemini..."
+        practiceBatch: batchTargets ? { targets: batchTargets, currentIndex: 0 } : undefined,
+        message: requestedMemoryKeys.length ? "Đang mở bài với các phần đáp án đã chọn..." : "Đang mở bài; câu chưa biết sẽ dùng Gemini..."
       };
       await saveRun(run);
       await appendLog("info", `Bắt đầu ${message.target.name} (${message.target.assessmentKind}).`);
-      const tab = await activeTnuTab();
-      const stayOnCurrentAttempt = message.mode === "from_current" && tab.url?.includes("/mod/quiz/attempt.php");
+      const stayOnCurrentAttempt = message.mode === "from_current";
       if (tab.url !== message.target.url && !stayOnCurrentAttempt) await browser.tabs.update(tab.id!, { url: message.target.url });
       else await browser.tabs.sendMessage(tab.id!, { type: "RESUME_RUN" }).catch(() => undefined);
       return { ok: true, data: run };
@@ -146,7 +162,8 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       if (!run || !pending) throw new Error("Không có câu hỏi đang chờ để kiểm tra lại.");
       const previousPrimaryIds = pending.decision.verification?.primaryOptionIds ?? pending.decision.selectedOptionIds;
       if (!previousPrimaryIds.length) throw new Error("Câu này chưa có đáp án ban đầu để kiểm tra kép.");
-      const cached = findMemoryDecision(await getAnswerMemory(), run.target, pending.question, run.memorySourceQuizKey);
+      const memoryKeys = run.memorySourceQuizKeys ?? (run.memorySourceQuizKey ? [run.memorySourceQuizKey] : []);
+      const cached = findMemoryDecision(await getAnswerMemory(), run.target, pending.question, memoryKeys);
       const primary = cached ?? { ...pending.decision, selectedOptionIds: previousPrimaryIds, verification: undefined };
       const controller = new AbortController();
       const requestId = `${run.id}:${pending.question.id}:verify`;
@@ -179,7 +196,8 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
     case "ANSWER_QUESTION": {
       const run = await getRun();
       if (!run || run.status === "paused") throw new Error("Phiên chạy không còn hoạt động.");
-      const remembered = findMemoryDecision(await getAnswerMemory(), run.target, message.question, run.memorySourceQuizKey);
+      const memoryKeys = run.memorySourceQuizKeys ?? (run.memorySourceQuizKey ? [run.memorySourceQuizKey] : []);
+      const remembered = findMemoryDecision(await getAnswerMemory(), run.target, message.question, memoryKeys);
       if (remembered) {
         await appendLog("success", `Tìm thấy đáp án đã chấm đúng cho ${message.question.number}.`);
         return { ok: true, data: remembered };
@@ -210,13 +228,34 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       }
     }
     case "SAVE_REVIEW_ANSWERS": {
-      if (!message.entries.length) return { ok: true, data: { saved: 0, total: (await getAnswerMemory()).length } };
-      const sourceUrl = message.entries[0]?.sourceUrl;
-      if (sourceUrl && await wasReviewCaptured(sourceUrl)) return { ok: true, data: { saved: 0, total: (await getAnswerMemory()).length } };
-      const total = await saveAnswerMemory(message.entries);
-      if (sourceUrl) await markReviewCaptured(sourceUrl);
-      await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
-      return { ok: true, data: { saved: message.entries.length, total } };
+      const sourceUrl = message.sourceUrl || message.entries[0]?.sourceUrl;
+      const alreadyCaptured = Boolean(sourceUrl && await wasReviewCaptured(sourceUrl));
+      const shouldSave = message.entries.length > 0 && !alreadyCaptured;
+      const total = shouldSave ? await saveAnswerMemory(message.entries) : (await getAnswerMemory()).length;
+      if (sourceUrl && !alreadyCaptured) await markReviewCaptured(sourceUrl);
+      if (shouldSave) await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
+      else if (!message.entries.length && !alreadyCaptured) await appendLog("warning", "Trang xem lại hiện tại không có đáp án đúng có thể lưu.");
+      const run = await getRun();
+      let nextTarget;
+      let batchCompleted = false;
+      const batchStep = run ? practiceBatchReviewStep(run, message.reviewComplete) : undefined;
+      if (run?.practiceBatch && batchStep) {
+        nextTarget = batchStep.nextTarget;
+        const learnedKeys = [...new Set([...(run.memorySourceQuizKeys ?? []), quizKey(run.target)])];
+        if (nextTarget) {
+          await saveRun({
+            ...run, target: nextTarget, status: "preparing", page: 1, currentQuestion: 0, totalOnPage: 0,
+            processedQuestionIds: [], startAnchorUsed: false, pendingDecision: undefined, currentQuestionSnapshot: undefined,
+            memorySourceQuizKey: learnedKeys[0] ?? null, memorySourceQuizKeys: learnedKeys,
+            practiceBatch: { ...run.practiceBatch, currentIndex: batchStep.nextIndex },
+            message: `Đã ghi nhớ ${run.target.name}. Đang chuyển sang ${nextTarget.name}...`, updatedAt: new Date().toISOString()
+          });
+        } else {
+          batchCompleted = batchStep.batchCompleted;
+          await updateRun({ status: "completed", message: `Đã hoàn tất chuỗi ${run.practiceBatch.targets.length} bài luyện tập và lưu đáp án đúng.` });
+        }
+      }
+      return { ok: true, data: { saved: shouldSave ? message.entries.length : 0, total, nextTarget, batchCompleted } };
     }
     case "CLEAR_ANSWER_MEMORY":
       await clearAnswerMemory();

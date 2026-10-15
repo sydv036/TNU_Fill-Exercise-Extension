@@ -98,12 +98,16 @@ export function findMemoryDecision(
   entries: AnswerMemoryEntry[],
   target: QuizTarget,
   question: QuestionSnapshot,
-  memorySourceQuizKey: string | null | undefined = undefined
+  memorySourceQuizKeys: string[] | string | null | undefined = undefined
 ): AnswerDecision | undefined {
-  if (memorySourceQuizKey === null) return undefined;
-  const key = memorySourceQuizKey ?? quizKey(target);
+  if (memorySourceQuizKeys === null) return undefined;
+  const keys = Array.isArray(memorySourceQuizKeys)
+    ? memorySourceQuizKeys
+    : [memorySourceQuizKeys ?? quizKey(target)];
+  if (!keys.length) return undefined;
+  const allowedKeys = new Set(keys);
   const rankedCandidates = entries
-    .filter((item) => item.courseId === target.courseId && item.quizKey === key && item.correctOptionLabels.length > 0)
+    .filter((item) => item.courseId === target.courseId && allowedKeys.has(item.quizKey) && item.correctOptionLabels.length > 0)
     .map((item) => {
       const exactPrompt = promptIdentity(item.prompt) === promptIdentity(question.prompt);
       const similarity = exactPrompt ? 1 : promptSimilarity(item.prompt, question.prompt);
@@ -114,6 +118,7 @@ export function findMemoryDecision(
 
   // Một bản ghi cũ có thể không còn khớp bộ lựa chọn, nên thử các bản ghi
   // hợp lệ tiếp theo của cùng câu trước khi kết luận bộ nhớ không có đáp án.
+  const matches: Array<{ entry: AnswerMemoryEntry; selectedOptionIds: string[] }> = [];
   for (const { item: entry } of rankedCandidates) {
     const rememberedLabels = entry.correctOptionLabels.map(canonicalOptionLabel);
     const selectedOptionIds = question.options
@@ -121,13 +126,20 @@ export function findMemoryDecision(
       .map((option) => option.id);
     if (!selectedOptionIds.length || selectedOptionIds.length !== rememberedLabels.length) continue;
     if ((question.type === "single" || question.type === "truefalse") && selectedOptionIds.length !== 1) continue;
-    return {
-      selectedOptionIds,
-      confidence: 1,
-      reason: `Đáp án từ ${[entry.courseName, entry.week, entry.quizName].filter(Boolean).join(" # ") || "phần đã chọn"}, được xác nhận đúng ngày ${new Date(entry.learnedAt).toLocaleDateString("vi-VN")}.`,
-      needsHumanReview: false,
-      source: "memory"
-    };
+    matches.push({ entry, selectedOptionIds });
   }
-  return undefined;
+  if (!matches.length) return undefined;
+  const signatures = new Set(matches.map(({ selectedOptionIds }) => [...selectedOptionIds].sort().join("|")));
+  // Nhiều cache cho đáp án khác nhau thì không tự tin bất kỳ cache nào.
+  if (signatures.size > 1) return undefined;
+  const selectedOptionIds = matches[0]!.selectedOptionIds;
+  const sources = [...new Set(matches.map(({ entry }) => [entry.courseName, entry.week, entry.quizName].filter(Boolean).join(" # ") || "phần đã chọn"))];
+  const latestLearnedAt = matches.map(({ entry }) => entry.learnedAt).sort().at(-1)!;
+  return {
+    selectedOptionIds,
+    confidence: 1,
+    reason: `Đáp án đồng thuận từ ${sources.join("; ")}, được xác nhận đúng gần nhất ngày ${new Date(latestLearnedAt).toLocaleDateString("vi-VN")}.`,
+    needsHumanReview: false,
+    source: "memory"
+  };
 }

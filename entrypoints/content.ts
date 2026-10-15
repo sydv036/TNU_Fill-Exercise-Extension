@@ -1,8 +1,10 @@
 import { applyDecisionToElement, detectPageKind, extractQuestion, extractReviewAnswerEntries, findQuestionElement, markSuggestion, parseCourseActivities, parseDashboardCourses } from "../src/moodle";
 import { chunkText } from "../src/knowledge";
+import { isReviewForTarget, nextReviewPageUrl } from "../src/quiz-navigation";
+import { shouldPauseForDecision } from "../src/run-policy";
 import pdfLibraryUrl from "pdfjs-dist/legacy/build/pdf.mjs?url&no-inline";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url&no-inline";
-import type { AnswerDecision, AppState, CourseIndex, CourseMaterial, KnowledgeChunk, KnowledgeExtractionResult, QuestionImage, QuestionSnapshot, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
+import type { AnswerDecision, AppState, CourseIndex, CourseMaterial, KnowledgeChunk, KnowledgeExtractionResult, QuestionImage, QuestionSnapshot, QuizTarget, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
 
 let processing = false;
 let stopped = false;
@@ -185,7 +187,7 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
       return;
     }
     const decision = answer.data;
-    const needsConfirmation = run.target.assessmentKind !== "practice" || run.reviewEveryAnswer || decision.needsHumanReview || decision.confidence < state.settings.confidenceThreshold;
+    const needsConfirmation = shouldPauseForDecision(run, decision, state.settings.confidenceThreshold);
     if (needsConfirmation) {
       markSuggestion(element, decision.selectedOptionIds);
       const source = decision.source === "memory" ? "Bộ nhớ đáp án đúng" : decision.reasoningPass ? "Gemini sau khi suy luận lại" : "Gemini";
@@ -222,22 +224,33 @@ async function processRun(): Promise<void> {
     const run = state.run!;
     const kind = detectPageKind(location.href, document);
     if (kind === "review") {
-      const reviewCmid = new URL(location.href).searchParams.get("cmid");
-      let targetCmid = "";
-      try { targetCmid = new URL(run.target.url).searchParams.get("id") ?? ""; } catch { /* URL thủ công không hợp lệ. */ }
-      if (reviewCmid && targetCmid && reviewCmid !== targetCmid) return;
+      if (!isReviewForTarget(location.href, run.target.url)) return;
       const entries = extractReviewAnswerEntries(document, run.target, location.href);
-      if (!entries.length) return;
-      const saved = await runtime<{ saved: number; total: number }>({ type: "SAVE_REVIEW_ANSWERS", entries });
-      if (saved.ok) {
-        await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${entries.length} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
+      const nextReviewUrl = nextReviewPageUrl(document, location.href);
+      const saved = await runtime<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean }>({
+        type: "SAVE_REVIEW_ANSWERS", entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
+      });
+      if (!saved.ok) throw new Error(saved.error || "Không lưu được đáp án từ trang xem lại.");
+      if (saved.data?.saved) await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${saved.data.saved} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
+      if (nextReviewUrl) {
+        if (run.practiceBatch || state.settings.autoNavigate) location.assign(nextReviewUrl);
+        else await runtime({ type: "UPDATE_RUN", patch: { status: "paused", message: "Đã lưu trang xem lại hiện tại. Hãy chuyển sang trang xem lại tiếp theo để lưu đủ cache." } });
+        return;
+      }
+      if (saved.data?.nextTarget) {
+        location.assign(saved.data.nextTarget.url);
+        return;
+      }
+      if (saved.data?.batchCompleted) {
+        await runtime({ type: "NOTIFY", title: "Hoàn tất chuỗi luyện tập", message: "Đã lưu đáp án đúng của toàn bộ bài luyện tập đã chọn.", level: "success" });
       }
       return;
     }
     if (["paused", "completed"].includes(run.status)) return;
     if (kind === "summary") {
-      await runtime({ type: "UPDATE_RUN", patch: { status: "completed", message: "Đã tới trang tổng kết. Hãy kiểm tra và tự nộp bài." } });
-      await runtime({ type: "NOTIFY", title: "Đã xử lý xong", message: "Extension đã dừng ở trang tổng kết và chưa nộp bài.", level: "success" });
+      const inBatch = Boolean(run.practiceBatch);
+      await runtime({ type: "UPDATE_RUN", patch: { status: inBatch ? "awaiting_user" : "completed", message: inBatch ? "Đã điền xong bài luyện tập này. Hãy tự nộp; sau trang xem lại tool sẽ chuyển sang bài tiếp theo." : "Đã tới trang tổng kết. Hãy kiểm tra và tự nộp bài." } });
+      await runtime({ type: "NOTIFY", title: "Đã xử lý xong", message: inBatch ? "Hãy tự nộp bài luyện tập để tool ghi nhớ đáp án đúng và chuyển bài tiếp theo." : "Extension đã dừng ở trang tổng kết và chưa nộp bài.", level: "success" });
       return;
     }
     if (kind === "quiz-view") {

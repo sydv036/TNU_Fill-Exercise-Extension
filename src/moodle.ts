@@ -174,7 +174,14 @@ function correctLabelsFromReview(element: HTMLElement, question: QuestionSnapsho
   const rightAnswer = normalizeText(element.querySelector<HTMLElement>(".rightanswer")?.textContent ?? "");
   if (rightAnswer) {
     const byFeedback = question.options
-      .filter((option) => rightAnswer.includes(canonicalOptionLabel(option.label)))
+      .filter((option) => {
+        const label = canonicalOptionLabel(option.label);
+        if (!label) return false;
+        const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return rightAnswer === label
+          || rightAnswer.endsWith(`: ${label}`)
+          || new RegExp(`(?:^|[:;,]\\s*)${escaped}(?:$|\\s*[;,])`).test(rightAnswer);
+      })
       .map((option) => option.label);
     if (byFeedback.length) return byFeedback;
   }
