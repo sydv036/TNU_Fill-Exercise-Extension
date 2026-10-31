@@ -1,7 +1,7 @@
 import { answerKnowledgeWithGemini, answerWithGemini, listGeminiModels } from "../src/gemini";
 import { findMemoryDecision, quizKey } from "../src/answer-memory";
 import { citationFromChunk, searchKnowledge, searchSelectedKnowledge } from "../src/knowledge";
-import { isAttemptForTarget } from "../src/quiz-navigation";
+import { isAttemptForTarget, isSupportedQuizTarget } from "../src/quiz-navigation";
 import { practiceBatchReviewStep } from "../src/run-policy";
 import { confirmVerificationChoice, reconcileIndependentCheck } from "../src/verification";
 import {
@@ -77,6 +77,7 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       await saveQueue(message.queue);
       return { ok: true };
     case "START_RUN": {
+      if (!isSupportedQuizTarget(message.target.url)) throw new Error("URL bài học không hợp lệ. Hãy chọn đúng liên kết bài quiz trên TNU.");
       const tab = await activeTnuTab();
       if (message.mode === "from_current" && !isAttemptForTarget(tab.url ?? "", message.target.url)) {
         throw new Error("“Từ câu hiện tại” chỉ dùng khi tab đang mở đúng bài đã chọn. Hãy mở đúng bài rồi thử lại.");
@@ -190,12 +191,12 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
         await appendLog(decision.verification?.status === "agreed" ? "success" : "warning", statusMessage);
         return { ok: true, data: decision };
       } finally {
-        activeRequests.delete(requestId);
+        if (activeRequests.get(requestId) === controller) activeRequests.delete(requestId);
       }
     }
     case "ANSWER_QUESTION": {
       const run = await getRun();
-      if (!run || run.status === "paused") throw new Error("Phiên chạy không còn hoạt động.");
+      if (!run || run.id !== message.runId || run.status === "paused") throw new Error("Phiên chạy không còn hoạt động.");
       const memoryKeys = run.memorySourceQuizKeys ?? (run.memorySourceQuizKey ? [run.memorySourceQuizKey] : []);
       const remembered = findMemoryDecision(await getAnswerMemory(), run.target, message.question, memoryKeys);
       if (remembered) {
@@ -205,6 +206,7 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       await updateRun({ message: `${message.question.number}: không có đáp án đã lưu phù hợp, đang hỏi Gemini...` });
       const controller = new AbortController();
       const requestId = `${run.id}:${message.question.id}`;
+      activeRequests.get(requestId)?.abort();
       activeRequests.set(requestId, controller);
       try {
         const settings = await getSettings();
@@ -224,7 +226,7 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
         }
         return { ok: true, data: decision };
       } finally {
-        activeRequests.delete(requestId);
+        if (activeRequests.get(requestId) === controller) activeRequests.delete(requestId);
       }
     }
     case "SAVE_REVIEW_ANSWERS": {
@@ -236,23 +238,24 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
       if (shouldSave) await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
       else if (!message.entries.length && !alreadyCaptured) await appendLog("warning", "Trang xem lại hiện tại không có đáp án đúng có thể lưu.");
       const run = await getRun();
+      const matchingRun = run?.id === message.runId ? run : undefined;
       let nextTarget;
       let batchCompleted = false;
-      const batchStep = run ? practiceBatchReviewStep(run, message.reviewComplete) : undefined;
-      if (run?.practiceBatch && batchStep) {
+      const batchStep = matchingRun ? practiceBatchReviewStep(matchingRun, message.reviewComplete) : undefined;
+      if (matchingRun?.practiceBatch && batchStep) {
         nextTarget = batchStep.nextTarget;
-        const learnedKeys = [...new Set([...(run.memorySourceQuizKeys ?? []), quizKey(run.target)])];
+        const learnedKeys = [...new Set([...(matchingRun.memorySourceQuizKeys ?? []), quizKey(matchingRun.target)])];
         if (nextTarget) {
           await saveRun({
-            ...run, target: nextTarget, status: "preparing", page: 1, currentQuestion: 0, totalOnPage: 0,
+            ...matchingRun, target: nextTarget, status: "preparing", page: 1, currentQuestion: 0, totalOnPage: 0,
             processedQuestionIds: [], startAnchorUsed: false, pendingDecision: undefined, currentQuestionSnapshot: undefined,
             memorySourceQuizKey: learnedKeys[0] ?? null, memorySourceQuizKeys: learnedKeys,
-            practiceBatch: { ...run.practiceBatch, currentIndex: batchStep.nextIndex },
-            message: `Đã ghi nhớ ${run.target.name}. Đang chuyển sang ${nextTarget.name}...`, updatedAt: new Date().toISOString()
+            practiceBatch: { ...matchingRun.practiceBatch, currentIndex: batchStep.nextIndex },
+            message: `Đã ghi nhớ ${matchingRun.target.name}. Đang chuyển sang ${nextTarget.name}...`, updatedAt: new Date().toISOString()
           });
         } else {
           batchCompleted = batchStep.batchCompleted;
-          await updateRun({ status: "completed", message: `Đã hoàn tất chuỗi ${run.practiceBatch.targets.length} bài luyện tập và lưu đáp án đúng.` });
+          await updateRun({ status: "completed", message: `Đã hoàn tất chuỗi ${matchingRun.practiceBatch.targets.length} bài luyện tập và lưu các đáp án đúng đọc được.` });
         }
       }
       return { ok: true, data: { saved: shouldSave ? message.entries.length : 0, total, nextTarget, batchCompleted } };
@@ -305,15 +308,18 @@ async function handle(message: RuntimeMessage): Promise<RuntimeResponse> {
         const data = await answerKnowledgeWithGemini(await getApiKey(), await getSettings(), query, matches, controller.signal);
         return { ok: true, data };
       } finally {
-        activeRequests.delete(requestId);
+        if (activeRequests.get(requestId) === controller) activeRequests.delete(requestId);
       }
     }
     case "CLEAR_KNOWLEDGE_INDEX":
       await clearKnowledgeIndex(message.courseId);
       await appendLog("warning", "Đã xóa chỉ mục tài liệu của một khóa học.");
       return { ok: true };
-    case "UPDATE_RUN":
+    case "UPDATE_RUN": {
+      const run = await getRun();
+      if (!run || run.id !== message.runId) return { ok: true, data: run };
       return { ok: true, data: await updateRun(message.patch) };
+    }
     case "NOTIFY":
       await notify(message.title, message.message, message.level);
       return { ok: true };

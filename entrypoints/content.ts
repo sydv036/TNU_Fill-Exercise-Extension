@@ -157,6 +157,7 @@ async function pauseAtQuestion(run: RunSession, question: QuestionSnapshot, mess
   };
   await runtime({
     type: "UPDATE_RUN",
+    runId: run.id,
     patch: { status: "awaiting_user", message, error: decision ? undefined : message, pendingDecision: { question, decision: recoverableDecision } }
   });
   await runtime({ type: "NOTIFY", title: "TNU Gemini cần bạn", message, level: "warning" });
@@ -168,20 +169,22 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
   const page = Number(new URL(location.href).searchParams.get("page") ?? "0") + 1;
   let startIndex = 0;
   if (run.mode === "from_current" && !run.startAnchorUsed) startIndex = currentQuestionStart(elements);
-  await runtime({ type: "UPDATE_RUN", patch: { status: "answering", page, totalOnPage: elements.length, startAnchorUsed: true, message: `Đang xử lý trang ${page}...` } });
+  await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "answering", page, totalOnPage: elements.length, startAnchorUsed: true, message: `Đang xử lý trang ${page}...` } });
   let processed = [...run.processedQuestionIds];
   for (let index = startIndex; index < elements.length; index++) {
     if (stopped) return;
     const element = elements[index]!;
     let question = extractQuestion(element, index);
     if (processed.includes(question.id)) continue;
-    await runtime({ type: "UPDATE_RUN", patch: { currentQuestion: index + 1, currentQuestionSnapshot: { ...question, images: [] }, message: `Đang đối chiếu bộ nhớ đáp án cho ${question.number}...` } });
+    await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { currentQuestion: index + 1, currentQuestionSnapshot: { ...question, images: [] }, message: `Đang đối chiếu bộ nhớ đáp án cho ${question.number}...` } });
     if (question.type === "unsupported" || !question.options.length) {
       await pauseAtQuestion(run, question, `${question.number} có loại chưa được hỗ trợ. Hãy tự xử lý rồi chọn Bỏ qua.`);
       return;
     }
     question = await attachImages(element, question);
-    const answer = await runtime<AnswerDecision>({ type: "ANSWER_QUESTION", question });
+    const answer = await runtime<AnswerDecision>({ type: "ANSWER_QUESTION", runId: run.id, question });
+    const latest = await runtime<AppState>({ type: "GET_STATE" });
+    if (stopped || latest.data?.run?.id !== run.id || latest.data.run.status === "paused") return;
     if (!answer.ok || !answer.data) {
       await pauseAtQuestion(run, question, answer.error || `Không xử lý được ${question.number}.`);
       return;
@@ -200,41 +203,48 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
     }
     element.setAttribute("data-tnu-gemini-done", "true");
     processed = [...processed, question.id];
-    await runtime({ type: "UPDATE_RUN", patch: { processedQuestionIds: processed, message: `Đã xử lý ${question.number}.` } });
+    await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { processedQuestionIds: processed, message: `Đã xử lý ${question.number}.` } });
     if (state.settings.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.settings.delayMs));
   }
   if (stopped) return;
   const next = nextButton();
   if (next && state.settings.autoNavigate) {
-    await runtime({ type: "UPDATE_RUN", patch: { status: "navigating", message: "Đang chuyển sang trang tiếp theo..." } });
+    await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "navigating", message: "Đang chuyển sang trang tiếp theo..." } });
     next.click();
     return;
   }
-  await runtime({ type: "UPDATE_RUN", patch: { status: "paused", message: next ? "Đã xong trang. Tự chuyển trang đang tắt." : "Không tìm thấy nút chuyển trang; hãy kiểm tra thủ công." } });
+  await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "paused", message: next ? "Đã xong trang. Tự chuyển trang đang tắt." : "Không tìm thấy nút chuyển trang; hãy kiểm tra thủ công." } });
 }
 
 async function processRun(): Promise<void> {
   if (processing) return;
   processing = true;
   stopped = false;
+  let activeRunId: string | undefined;
   try {
     const response = await runtime<AppState>({ type: "GET_STATE" });
     if (!response.ok || !response.data?.run) return;
     const state = response.data;
     const run = state.run!;
+    activeRunId = run.id;
     const kind = detectPageKind(location.href, document);
     if (kind === "review") {
       if (!isReviewForTarget(location.href, run.target.url)) return;
+      if (!document.querySelector(".que")) {
+        await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "error", error: "Trang xem lại không hiển thị chi tiết câu hỏi.", message: "Không thể đọc đáp án đúng từ trang xem lại này." } });
+        return;
+      }
       const entries = extractReviewAnswerEntries(document, run.target, location.href);
       const nextReviewUrl = nextReviewPageUrl(document, location.href);
       const saved = await runtime<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean }>({
-        type: "SAVE_REVIEW_ANSWERS", entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
+        type: "SAVE_REVIEW_ANSWERS", runId: run.id, entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
       });
       if (!saved.ok) throw new Error(saved.error || "Không lưu được đáp án từ trang xem lại.");
       if (saved.data?.saved) await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${saved.data.saved} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
+      else if (!entries.length) await runtime({ type: "NOTIFY", title: "Không có cache mới", message: "Trang xem lại này không có đáp án đúng có thể lưu.", level: "warning" });
       if (nextReviewUrl) {
         if (run.practiceBatch || state.settings.autoNavigate) location.assign(nextReviewUrl);
-        else await runtime({ type: "UPDATE_RUN", patch: { status: "paused", message: "Đã lưu trang xem lại hiện tại. Hãy chuyển sang trang xem lại tiếp theo để lưu đủ cache." } });
+        else await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "paused", message: "Đã lưu trang xem lại hiện tại. Hãy chuyển sang trang xem lại tiếp theo để lưu đủ cache." } });
         return;
       }
       if (saved.data?.nextTarget) {
@@ -242,38 +252,43 @@ async function processRun(): Promise<void> {
         return;
       }
       if (saved.data?.batchCompleted) {
-        await runtime({ type: "NOTIFY", title: "Hoàn tất chuỗi luyện tập", message: "Đã lưu đáp án đúng của toàn bộ bài luyện tập đã chọn.", level: "success" });
+        await runtime({ type: "NOTIFY", title: "Hoàn tất chuỗi luyện tập", message: "Đã lưu các đáp án đúng đọc được của toàn bộ bài luyện tập đã chọn.", level: "success" });
       }
+      return;
+    }
+    if (run.status === "awaiting_user" && run.pendingDecision) {
+      const pendingElement = findQuestionElement(run.pendingDecision.question.id);
+      if (pendingElement) markSuggestion(pendingElement, run.pendingDecision.decision.selectedOptionIds);
       return;
     }
     if (["paused", "completed"].includes(run.status)) return;
     if (kind === "summary") {
       const inBatch = Boolean(run.practiceBatch);
-      await runtime({ type: "UPDATE_RUN", patch: { status: inBatch ? "awaiting_user" : "completed", message: inBatch ? "Đã điền xong bài luyện tập này. Hãy tự nộp; sau trang xem lại tool sẽ chuyển sang bài tiếp theo." : "Đã tới trang tổng kết. Hãy kiểm tra và tự nộp bài." } });
+      await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: inBatch ? "awaiting_user" : "completed", message: inBatch ? "Đã điền xong bài luyện tập này. Hãy tự nộp; sau trang xem lại tool sẽ chuyển sang bài tiếp theo." : "Đã tới trang tổng kết. Hãy kiểm tra và tự nộp bài." } });
       await runtime({ type: "NOTIFY", title: "Đã xử lý xong", message: inBatch ? "Hãy tự nộp bài luyện tập để tool ghi nhớ đáp án đúng và chuyển bài tiếp theo." : "Extension đã dừng ở trang tổng kết và chưa nộp bài.", level: "success" });
       return;
     }
     if (kind === "quiz-view") {
       if (run.target.assessmentKind !== "practice") {
-        await runtime({ type: "UPDATE_RUN", patch: { status: "awaiting_user", message: "Bài kiểm tra tính điểm: hãy tự xác nhận bắt đầu trên Moodle." } });
+        await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "awaiting_user", message: "Bài kiểm tra tính điểm: hãy tự xác nhận bắt đầu trên Moodle." } });
         return;
       }
       const confirm = document.querySelector<HTMLElement>("#id_submitbutton");
-      const start = document.querySelector<HTMLElement>('button[type="submit"], input[type="submit"]');
+      const start = document.querySelector<HTMLElement>('button[name="startattempt"], input[name="startattempt"], form[action*="/mod/quiz/startattempt.php"] button[type="submit"], form[action*="/mod/quiz/startattempt.php"] input[type="submit"]');
       const target = confirm ?? start;
       if (!target) throw new Error("Không tìm thấy nút bắt đầu/làm lại bài luyện tập.");
-      await runtime({ type: "UPDATE_RUN", patch: { status: "preparing", message: "Đang bắt đầu bài luyện tập..." } });
+      await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "preparing", message: "Đang bắt đầu bài luyện tập..." } });
       target.click();
       return;
     }
     if (kind !== "attempt") {
-      await runtime({ type: "UPDATE_RUN", patch: { status: "paused", message: "Trang hiện tại không phải trang làm quiz." } });
+      await runtime({ type: "UPDATE_RUN", runId: run.id, patch: { status: "paused", message: "Trang hiện tại không phải trang làm quiz." } });
       return;
     }
     await processAttempt(run, state);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await runtime({ type: "UPDATE_RUN", patch: { status: "error", error: message, message } });
+    if (activeRunId) await runtime({ type: "UPDATE_RUN", runId: activeRunId, patch: { status: "error", error: message, message } });
     await runtime({ type: "NOTIFY", title: "TNU Gemini gặp lỗi", message, level: "error" });
   } finally {
     processing = false;
@@ -291,6 +306,7 @@ async function applyPending(): Promise<void> {
   element.setAttribute("data-tnu-gemini-done", "true");
   await runtime({
     type: "UPDATE_RUN",
+    runId: run.id,
     patch: {
       status: "answering", error: undefined, pendingDecision: undefined,
       processedQuestionIds: [...new Set([...run.processedQuestionIds, pending.question.id])],
@@ -307,6 +323,7 @@ async function skipPending(): Promise<void> {
   if (!run) return;
   await runtime({
     type: "UPDATE_RUN",
+    runId: run.id,
     patch: {
       status: "answering", error: undefined, pendingDecision: undefined,
       processedQuestionIds: pendingId ? [...new Set([...run.processedQuestionIds, pendingId])] : run.processedQuestionIds,

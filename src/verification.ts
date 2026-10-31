@@ -12,8 +12,9 @@ export function reconcileIndependentCheck(
   confidenceThreshold: number
 ): AnswerDecision {
   const sameAnswer = sameSelection(primary.selectedOptionIds, verifier.selectedOptionIds);
+  const primaryCertain = !primary.needsHumanReview && primary.confidence >= confidenceThreshold;
   const verifierCertain = !verifier.needsHumanReview && verifier.confidence >= confidenceThreshold;
-  const status = !sameAnswer ? "conflict" : verifierCertain ? "agreed" : "uncertain";
+  const status = !sameAnswer ? "conflict" : primaryCertain && verifierCertain ? "agreed" : "uncertain";
   const safeToApply = status === "agreed";
   return {
     ...primary,

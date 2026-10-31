@@ -31,6 +31,15 @@ describe("independent answer verification", () => {
     expect(result.verification?.status).toBe("uncertain");
   });
 
+  it("does not mark two matching answers safe when the initial answer was uncertain", () => {
+    const uncertainPrimary = { ...primary, confidence: 0.55, needsHumanReview: true };
+    const result = reconcileIndependentCheck(uncertainPrimary, {
+      selectedOptionIds: ["option_1"], confidence: 0.97, reason: "Lượt hai chắc chắn", needsHumanReview: false, source: "gemini"
+    }, 0.85);
+    expect(result.selectedOptionIds).toEqual([]);
+    expect(result.verification?.status).toBe("uncertain");
+  });
+
   it("restores the agreed answer after an explicit user confirmation", () => {
     const uncertain = reconcileIndependentCheck(primary, {
       selectedOptionIds: ["option_1"], confidence: 0.95, reason: "Cùng đáp án nhưng dưới ngưỡng", needsHumanReview: true, source: "gemini"

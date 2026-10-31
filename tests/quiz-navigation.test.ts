@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAttemptForTarget, isReviewForTarget, nextReviewPageUrl, quizModuleId } from "../src/quiz-navigation";
+import { isAttemptForTarget, isReviewForTarget, isSupportedQuizTarget, nextReviewPageUrl, quizModuleId } from "../src/quiz-navigation";
 
 function doc(html: string): Document {
   return new DOMParser().parseFromString(html, "text/html");
@@ -19,10 +19,22 @@ describe("quiz navigation identity", () => {
     expect(isAttemptForTarget("https://tnu.aum.edu.vn/mod/quiz/attempt.php?attempt=99", target)).toBe(false);
   });
 
+  it("accepts only a TNU quiz view as a runnable target", () => {
+    expect(isSupportedQuizTarget(target)).toBe(true);
+    expect(isSupportedQuizTarget("https://example.com/mod/quiz/view.php?id=500414")).toBe(false);
+    expect(isSupportedQuizTarget("https://tnu.aum.edu.vn/mod/quiz/view.php")).toBe(false);
+  });
+
   it("finds only the next review page of the same quiz", () => {
     const current = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=12&cmid=500414&page=0";
     expect(nextReviewPageUrl(doc('<a class="mod_quiz-next-nav" href="/mod/quiz/review.php?attempt=12&cmid=500414&page=1">Tiếp</a>'), current))
       .toBe("https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=12&cmid=500414&page=1");
     expect(nextReviewPageUrl(doc('<a rel="next" href="/mod/quiz/review.php?attempt=99&cmid=7&page=1">Tiếp</a>'), current)).toBeUndefined();
+  });
+
+  it("selects the nearest later page from a Moodle pagination block", () => {
+    const current = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=12&cmid=500414&page=0";
+    const document = doc('<nav class="pagination"><a href="/mod/quiz/review.php?attempt=12&cmid=500414&page=2">3</a><a href="/mod/quiz/review.php?attempt=12&cmid=500414&page=1">2</a></nav>');
+    expect(nextReviewPageUrl(document, current)).toContain("page=1");
   });
 });

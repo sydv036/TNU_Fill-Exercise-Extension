@@ -266,15 +266,15 @@ export type RuntimeMessage =
   | { type: "VERIFY_QUESTION" }
   | { type: "CONFIRM_VERIFICATION"; choice: "primary" | "verifier" }
   | { type: "SHOW_VERIFICATION"; questionId: string; selectedOptionIds: string[] }
-  | { type: "ANSWER_QUESTION"; question: QuestionSnapshot }
-  | { type: "SAVE_REVIEW_ANSWERS"; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
+  | { type: "ANSWER_QUESTION"; runId: string; question: QuestionSnapshot }
+  | { type: "SAVE_REVIEW_ANSWERS"; runId: string; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
   | { type: "CLEAR_ANSWER_MEMORY" }
   | { type: "CLEAR_ALL_DATA" }
   | { type: "INDEX_COURSE_MATERIALS"; courseId: string }
   | { type: "EXTRACT_COURSE_MATERIALS"; materials: CourseMaterial[] }
   | { type: "SEARCH_KNOWLEDGE"; courseId: string; query: string; useGemini: boolean }
   | { type: "CLEAR_KNOWLEDGE_INDEX"; courseId: string }
-  | { type: "UPDATE_RUN"; patch: Partial<RunSession> }
+  | { type: "UPDATE_RUN"; runId: string; patch: Partial<RunSession> }
   | { type: "NOTIFY"; title: string; message: string; level?: LogEntry["level"] }
   | { type: "CONTENT_READY"; url: string };
 

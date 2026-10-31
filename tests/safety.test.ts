@@ -11,6 +11,7 @@ describe("submission safety", () => {
   it("does not target Moodle final-submit controls", () => {
     expect(contentSource).not.toMatch(/querySelector[^\n]*submitall/i);
     expect(contentSource).not.toMatch(/\.click\(\)[^\n]*submitall/i);
+    expect(contentSource).not.toContain("document.querySelector<HTMLElement>('button[type=\"submit\"], input[type=\"submit\"]')");
   });
 
   it("handles summary as a terminal state", () => {
@@ -34,5 +35,11 @@ describe("submission safety", () => {
     expect(backgroundSource).toContain('assessmentKind !== "practice"');
     expect(backgroundSource).toContain('["agreed", "user_confirmed"]');
     expect(backgroundSource).toContain("Bài kiểm tra chỉ được áp dụng sau khi kiểm tra kép đồng thuận.");
+  });
+
+  it("ties every content-script run update to the session that produced it", () => {
+    const updates = contentSource.match(/type:\s*"UPDATE_RUN"/g) ?? [];
+    const guardedUpdates = contentSource.match(/type:\s*"UPDATE_RUN",\s*runId:/g) ?? [];
+    expect(guardedUpdates).toHaveLength(updates.length);
   });
 });
