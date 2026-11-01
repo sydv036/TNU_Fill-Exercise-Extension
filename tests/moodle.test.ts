@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/defaults";
-import { applyDecisionToElement, detectPageKind, extractQuestion, parseCourseActivities, parseDashboardCourses } from "../src/moodle";
+import { applyDecisionToElement, applyVerifiedDecisionToElement, isValidSelection, detectPageKind, extractQuestion, markSuggestion, parseCourseActivities, parseDashboardCourses } from "../src/moodle";
 
 function doc(html: string): Document {
   return new DOMParser().parseFromString(html, "text/html");
@@ -57,7 +57,51 @@ describe("Moodle parser", () => {
     expect((document.querySelector("#a1") as HTMLInputElement).checked).toBe(true);
   });
 
+  it("ignores Moodle's current question flag control when detecting answer type", () => {
+    const document = doc(`<div class="que" id="question-flagged"><div class="info"><label><input type="checkbox" name="q1:flag" class="questionflagpostdata">Đặt cờ</label></div><div class="qtext">Chọn đáp án</div><div class="answer"><label><input type="radio" name="q1">A. Một</label><label><input type="radio" name="q1">B. Hai</label></div></div>`);
+    const question = extractQuestion(document.querySelector<HTMLElement>(".que")!, 0);
+    expect(question.type).toBe("single");
+    expect(question.options.map((option) => option.label)).toEqual(["A. Một", "B. Hai"]);
+  });
+
   it("recognizes summary before any submit action", () => {
     expect(detectPageKind("https://tnu.aum.edu.vn/mod/quiz/summary.php?attempt=1", doc('<button name="submitall">Nộp bài và kết thúc</button>'))).toBe("summary");
+  });
+
+  it("refuses to fill when options changed or the user selected an answer", () => {
+    const document = doc('<div class="que" id="q"><div class="qtext">Câu hỏi</div><div class="answer"><label><input type="radio" name="q">Một</label><label><input type="radio" name="q">Hai</label></div></div>');
+    const element = document.querySelector<HTMLElement>(".que")!;
+    const snapshot = extractQuestion(element, 0);
+    const labels = element.querySelectorAll("label");
+    labels[0]!.append(" thay đổi");
+    expect(applyVerifiedDecisionToElement(element, snapshot, ["option_0"])).toBe(false);
+    expect(element.querySelector<HTMLInputElement>("input")!.checked).toBe(false);
+    labels[0]!.lastChild!.textContent = "";
+    element.querySelectorAll<HTMLInputElement>("input")[1]!.checked = true;
+    expect(applyVerifiedDecisionToElement(element, snapshot, ["option_0"])).toBe(false);
+  });
+
+  it("validates multi-choice selections before touching the page", () => {
+    const document = doc('<div class="que" id="q"><div class="qtext">Chọn nhiều</div><div class="answer"><label><input type="checkbox">Một</label><label><input type="checkbox">Hai</label></div></div>');
+    const element = document.querySelector<HTMLElement>(".que")!;
+    const question = extractQuestion(element, 0);
+    expect(question.type).toBe("multiple");
+    expect(isValidSelection(question, [])).toBe(false);
+    expect(isValidSelection(question, ["option_0", "option_0"])).toBe(false);
+    expect(isValidSelection(question, ["option_99"])).toBe(false);
+    expect(isValidSelection({ ...question, type: "unsupported" }, ["option_0"])).toBe(false);
+    expect(applyVerifiedDecisionToElement(element, question, ["option_0", "option_1"])).toBe(true);
+    expect(element.querySelectorAll("input:checked")).toHaveLength(2);
+  });
+
+  it("detects true/false and updates visual suggestions without selecting an answer", () => {
+    const document = doc('<div class="que" id="q"><div class="qtext">Đúng?</div><div class="answer"><label><input type="radio" name="q">Đúng</label><label><input type="radio" name="q">Sai</label></div></div>');
+    const element = document.querySelector<HTMLElement>(".que")!;
+    const question = extractQuestion(element, 0);
+    expect(question.type).toBe("truefalse");
+    expect(isValidSelection(question, ["option_0", "option_1"])).toBe(false);
+    markSuggestion(element, ["option_1"]);
+    expect(element.querySelectorAll('[data-tnu-gemini-suggestion="true"]')).toHaveLength(1);
+    expect(element.querySelectorAll("input:checked")).toHaveLength(0);
   });
 });

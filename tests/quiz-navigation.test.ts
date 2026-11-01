@@ -37,4 +37,14 @@ describe("quiz navigation identity", () => {
     const document = doc('<nav class="pagination"><a href="/mod/quiz/review.php?attempt=12&cmid=500414&page=2">3</a><a href="/mod/quiz/review.php?attempt=12&cmid=500414&page=1">2</a></nav>');
     expect(nextReviewPageUrl(document, current)).toContain("page=1");
   });
+
+  it("safely rejects invalid URLs and unrelated review attempts", () => {
+    expect(quizModuleId("invalid")).toBeUndefined();
+    expect(isSupportedQuizTarget("invalid")).toBe(false);
+    expect(isAttemptForTarget("invalid", target)).toBe(false);
+    expect(isReviewForTarget("invalid", target)).toBe(false);
+    const current = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=12&cmid=500414&page=2";
+    const document = doc('<nav class="pagination"><a href="/mod/quiz/review.php?attempt=13&cmid=500414&page=3">khác lượt</a><a href="/mod/quiz/review.php?attempt=12&cmid=500414&page=1">trước</a><a href="/mod/quiz/view.php?id=500414">khác trang</a></nav>');
+    expect(nextReviewPageUrl(document, current)).toBeUndefined();
+  });
 });

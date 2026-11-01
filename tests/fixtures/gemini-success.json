@@ -1,0 +1,7 @@
+{
+  "candidates": [{
+    "content": { "role": "model", "parts": [{ "text": "{\"selectedOptionIds\":[\"option_1\"],\"confidence\":0.95,\"reason\":\"2 + 2 = 4\",\"needsHumanReview\":false}" }] },
+    "finishReason": "STOP"
+  }],
+  "usageMetadata": { "promptTokenCount": 34, "candidatesTokenCount": 20, "totalTokenCount": 54 }
+}

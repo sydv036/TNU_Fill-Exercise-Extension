@@ -22,13 +22,13 @@ export function reconcileIndependentCheck(
     confidence: safeToApply ? Math.min(primary.confidence, verifier.confidence) : 0,
     needsHumanReview: !safeToApply,
     reason: safeToApply
-      ? `Kiểm tra kép đạt: đáp án ban đầu và Gemini suy luận độc lập cùng kết luận. ${verifier.reason}`.trim()
+      ? `Kiểm tra kép đạt: đáp án ban đầu và lượt AI độc lập cùng kết luận. ${verifier.reason}`.trim()
       : status === "conflict"
-        ? "Kiểm tra kép phát hiện cache/gợi ý ban đầu và Gemini không đồng thuận. Tool đã khóa áp dụng tự động; hãy tự kiểm tra câu này."
-        : "Gemini đồng thuận với đáp án ban đầu nhưng độ tin cậy chưa đạt ngưỡng. Tool đã khóa áp dụng tự động.",
+        ? "Kiểm tra kép phát hiện gợi ý ban đầu và lượt AI độc lập không đồng thuận. Tool đã khóa áp dụng tự động; hãy tự kiểm tra câu này."
+        : "AI đồng thuận với đáp án ban đầu nhưng độ tin cậy chưa đạt ngưỡng. Tool đã khóa áp dụng tự động.",
     verification: {
       status,
-      primarySource: primary.source === "memory" ? "memory" : "gemini",
+      primarySource: primary.source ?? "gemini",
       primaryOptionIds: [...primary.selectedOptionIds],
       primaryConfidence: primary.confidence,
       verifierOptionIds: [...verifier.selectedOptionIds],
@@ -49,7 +49,7 @@ export function confirmVerificationChoice(decision: AnswerDecision, choice: "pri
     selectedOptionIds: [...selectedOptionIds],
     confidence: Number.isFinite(selectedConfidence) ? selectedConfidence : verification.verifierConfidence,
     needsHumanReview: false,
-    reason: `Bạn đã xác nhận thủ công ${choice === "primary" ? "gợi ý ban đầu" : "kết quả Gemini kiểm tra lại"}.`,
+    reason: `Bạn đã xác nhận thủ công ${choice === "primary" ? "gợi ý ban đầu" : "kết quả AI kiểm tra lại"}.`,
     verification: { ...verification, status: "user_confirmed" }
   };
 }

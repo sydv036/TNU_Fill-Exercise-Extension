@@ -87,6 +87,14 @@ function labelForInput(input: HTMLInputElement): string {
   return (container?.textContent || input.getAttribute("aria-label") || input.value || "").replace(/\s+/g, " ").trim();
 }
 
+function questionChoiceInputs(element: HTMLElement): HTMLInputElement[] {
+  const answerRoot = element.querySelector<HTMLElement>(".answer") ?? element.querySelector<HTMLElement>(".formulation") ?? element;
+  return [...answerRoot.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
+    .filter((input) => !input.className.includes("questionflag")
+      && !input.closest('.info, .questionflag, [class*="questionflag"]')
+      && !/flag/i.test(input.name));
+}
+
 export function extractQuestion(element: HTMLElement, index: number): QuestionSnapshot {
   const rawId = element.id || element.getAttribute("data-questionid") || `question-${index + 1}`;
   const qtext = element.querySelector<HTMLElement>(".qtext");
@@ -94,8 +102,7 @@ export function extractQuestion(element: HTMLElement, index: number): QuestionSn
   const prompt = (qtext?.innerText || qtext?.textContent
     || formulation?.innerText || formulation?.textContent
     || "").replace(/\s+/g, " ").trim();
-  const inputs = [...element.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-    .filter((input) => !input.classList.contains("questionflag"));
+  const inputs = questionChoiceInputs(element);
   const options = inputs.map((input, optionIndex) => ({
     id: `option_${optionIndex}`,
     label: labelForInput(input),
@@ -104,7 +111,7 @@ export function extractQuestion(element: HTMLElement, index: number): QuestionSn
   let type: QuestionSnapshot["type"] = "unsupported";
   if (inputs.length && inputs.every((input) => input.type === "radio")) type = "single";
   if (inputs.length && inputs.every((input) => input.type === "checkbox")) type = "multiple";
-  const normalizedLabels = options.map((option) => normalizeText(option.label));
+  const normalizedLabels = options.map((option) => normalizeText(option.label).replace(/đ/g, "d"));
   if (type === "single" && options.length === 2 && normalizedLabels.some((label) => /(^|\s)(dung|true)(\s|$)/.test(label)) && normalizedLabels.some((label) => /(^|\s)(sai|false)(\s|$)/.test(label))) {
     type = "truefalse";
   }
@@ -134,8 +141,7 @@ export function findQuestionElement(questionId: string): HTMLElement | null {
 }
 
 export function applyDecisionToElement(element: HTMLElement, selectedOptionIds: string[]): boolean {
-  const inputs = [...element.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-    .filter((input) => !input.classList.contains("questionflag"));
+  const inputs = questionChoiceInputs(element);
   if (!inputs.length) return false;
   inputs.forEach((input, index) => {
     const shouldSelect = selectedOptionIds.includes(`option_${index}`);
@@ -148,10 +154,32 @@ export function applyDecisionToElement(element: HTMLElement, selectedOptionIds: 
   return true;
 }
 
+// Verify the exact snapshot before mutating any inputs. Positional IDs alone are not stable.
+export function matchesQuestionSnapshot(element: HTMLElement, snapshot: QuestionSnapshot): boolean {
+  const current = extractQuestion(element, 0);
+  if (current.id !== snapshot.id || current.type !== snapshot.type || current.prompt !== snapshot.prompt) return false;
+  if (current.options.length !== snapshot.options.length || current.options.some((option, index) => {
+    const previous = snapshot.options[index];
+    return !previous || option.id !== previous.id || option.label !== previous.label || option.selected !== previous.selected;
+  })) return false;
+  return true;
+}
+
+export function isValidSelection(snapshot: QuestionSnapshot, selectedOptionIds: string[]): boolean {
+  const allowed = new Set(snapshot.options.map((option) => option.id));
+  if (!selectedOptionIds.length || new Set(selectedOptionIds).size !== selectedOptionIds.length || selectedOptionIds.some((id) => !allowed.has(id))) return false;
+  if ((snapshot.type === "single" || snapshot.type === "truefalse") && selectedOptionIds.length !== 1) return false;
+  return snapshot.type !== "unsupported";
+}
+
+export function applyVerifiedDecisionToElement(element: HTMLElement, snapshot: QuestionSnapshot, selectedOptionIds: string[]): boolean {
+  if (!matchesQuestionSnapshot(element, snapshot) || !isValidSelection(snapshot, selectedOptionIds)) return false;
+  return applyDecisionToElement(element, selectedOptionIds);
+}
+
 export function markSuggestion(element: HTMLElement, selectedOptionIds: string[]): void {
   element.querySelectorAll("[data-tnu-gemini-suggestion]").forEach((node) => node.removeAttribute("data-tnu-gemini-suggestion"));
-  const inputs = [...element.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-    .filter((input) => !input.classList.contains("questionflag"));
+  const inputs = questionChoiceInputs(element);
   inputs.forEach((input, index) => {
     if (!selectedOptionIds.includes(`option_${index}`)) return;
     const target = input.closest<HTMLElement>("label, .r0, .r1") ?? input.parentElement;
@@ -160,8 +188,7 @@ export function markSuggestion(element: HTMLElement, selectedOptionIds: string[]
 }
 
 function correctLabelsFromReview(element: HTMLElement, question: QuestionSnapshot): string[] {
-  const inputs = [...element.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-    .filter((input) => !input.classList.contains("questionflag"));
+  const inputs = questionChoiceInputs(element);
   const byMarkedRow = inputs.flatMap((input, index) => {
     const row = input.closest<HTMLElement>(".r0, .r1, .answer > div, label");
     const correctContainer = input.closest<HTMLElement>(".answer .correct");
@@ -186,7 +213,7 @@ function correctLabelsFromReview(element: HTMLElement, question: QuestionSnapsho
     if (byFeedback.length) return byFeedback;
   }
 
-  const state = normalizeText(element.querySelector<HTMLElement>(".state")?.textContent ?? "");
+  const state = normalizeText(element.querySelector<HTMLElement>(".state")?.textContent ?? "").replace(/đ/g, "d");
   const fullyCorrect = element.classList.contains("correct") || /(^|\s)(dung|correct)(\s|$)/.test(state);
   if (fullyCorrect) return question.options.filter((option) => option.selected).map((option) => option.label);
   return [];

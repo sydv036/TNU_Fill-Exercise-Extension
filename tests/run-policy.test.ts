@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { practiceBatchReviewStep, shouldPauseForDecision } from "../src/run-policy";
+import { practiceBatchReviewStep, questionStartIndex, shouldPauseForDecision } from "../src/run-policy";
 import type { AnswerDecision, QuizTarget, RunSession } from "../src/types";
 
 const practiceTarget: QuizTarget = {
@@ -22,26 +22,44 @@ const uncertainDecision: AnswerDecision = {
   source: "gemini"
 };
 
-function runFor(target: QuizTarget, batch = false): Pick<RunSession, "target" | "practiceBatch" | "reviewEveryAnswer"> {
+function runFor(target: QuizTarget, batch = false, reviewEveryAnswer = false): Pick<RunSession, "target" | "practiceBatch" | "reviewEveryAnswer"> {
   return {
     target,
-    reviewEveryAnswer: true,
+    reviewEveryAnswer,
     practiceBatch: batch ? { targets: [practiceTarget], currentIndex: 0 } : undefined
   };
 }
 
 describe("answer pause policy", () => {
+  it("resumes from the original anchor on the first page and from the beginning on later pages", () => {
+    expect(questionStartIndex({ mode: "from_current", startAnchorUsed: false }, 2, 4)).toBe(4);
+    expect(questionStartIndex({ mode: "from_current", startAnchorUsed: true, startAnchorPage: 2, startAnchorIndex: 4 }, 2, 0)).toBe(4);
+    expect(questionStartIndex({ mode: "from_current", startAnchorUsed: true, startAnchorPage: 2, startAnchorIndex: 4 }, 3, 0)).toBe(0);
+    expect(questionStartIndex({ mode: "from_start", startAnchorUsed: false }, 2, 4)).toBe(0);
+  });
   it("runs a practice cache batch straight through despite low-confidence Gemini output", () => {
-    expect(shouldPauseForDecision(runFor(practiceTarget, true), uncertainDecision, 0.9)).toBe(false);
+    expect(shouldPauseForDecision(runFor(practiceTarget, true), uncertainDecision, 0.9, "ask")).toBe(false);
   });
 
-  it("still pauses an ordinary practice run when Gemini is uncertain", () => {
-    expect(shouldPauseForDecision(runFor(practiceTarget), uncertainDecision, 0.9)).toBe(true);
+  it("auto-applies a valid uncertain answer in self-reasoning mode", () => {
+    expect(shouldPauseForDecision(runFor(practiceTarget), uncertainDecision, 0.9, "reason")).toBe(false);
+  });
+
+  it("pauses an ordinary practice run only when Ask me is selected", () => {
+    expect(shouldPauseForDecision(runFor(practiceTarget), uncertainDecision, 0.9, "ask")).toBe(true);
+  });
+
+  it("honors the explicit stop-every-question option in self-reasoning mode", () => {
+    expect(shouldPauseForDecision(runFor(practiceTarget, false, true), { ...uncertainDecision, confidence: 1, needsHumanReview: false }, 0.9, "reason")).toBe(true);
+  });
+
+  it("does not try to apply an empty answer in self-reasoning mode", () => {
+    expect(shouldPauseForDecision(runFor(practiceTarget), { ...uncertainDecision, selectedOptionIds: [] }, 0.9, "reason")).toBe(true);
   });
 
   it("never weakens confirmation for a graded assessment", () => {
     const gradedTarget = { ...practiceTarget, id: "graded-1", assessmentKind: "graded" as const };
-    expect(shouldPauseForDecision(runFor(gradedTarget, true), { ...uncertainDecision, confidence: 1, needsHumanReview: false }, 0.9)).toBe(true);
+    expect(shouldPauseForDecision(runFor(gradedTarget, true), { ...uncertainDecision, confidence: 1, needsHumanReview: false }, 0.9, "reason")).toBe(true);
   });
 });
 

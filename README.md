@@ -1,48 +1,91 @@
-# TNU Gemini Study Assistant
+# TNU Fill Exercise Assistant V3.2
 
-Extension Manifest V3 dành cho Chrome/Edge, hỗ trợ quét khóa học TNU, dùng Gemini để gợi ý đáp án và tự điền **bài luyện tập**. Bài kiểm tra tính điểm luôn yêu cầu người dùng xác nhận từng đáp án, và extension không bao giờ tự nộp bài.
+Chrome/Edge extension hỗ trợ làm bài luyện tập trên Moodle TNU. V3.3 tự động trao đổi với tab Gemini, ChatGPT, Claude hoặc DeepSeek Web đã đăng nhập, giữ Gemini API độc lập và không tự nộp bài.
 
-## Tính năng đáng chú ý
+## Trạng thái tích hợp AI Web
 
-- Gợi ý ba nhóm model dễ hiểu: khuyên dùng, tiết kiệm và suy luận sâu; danh sách thực tế được kiểm tra lại theo API key.
-- Hai chế độ xử lý câu Gemini chưa chắc chắn: **Tự suy luận lại** hoặc **Hỏi tôi**.
-- Tab **Đang chạy** hiển thị trực tiếp câu hỏi hiện tại, các lựa chọn và phương án đang được gợi ý.
-- Sau khi người dùng tự nộp bài và Moodle mở trang xem lại, extension lưu các đáp án được Moodle xác nhận đúng.
-- Bộ nhớ được chia theo nguồn có tên đầy đủ dạng **Khóa học # Tuần # Bài**; trước khi chạy, người dùng chọn đúng phần đã làm để chỉ đối chiếu trong phần đó.
-- Bài kiểm tra bắt buộc dừng từng câu và chỉ cho **Áp dụng** sau khi nút **Kiểm tra lại** xác nhận cache/gợi ý ban đầu đồng thuận với một lượt Gemini suy luận độc lập; nếu mâu thuẫn hoặc thiếu tin cậy, extension khóa áp dụng tự động.
-- Có thể bật chế độ dừng từng câu trên bài luyện tập để thử luồng kiểm tra kép mà không cần dùng bài kiểm tra thật.
-- Ở bước chuẩn bị, người dùng chọn chính xác từng slide/giáo trình muốn đính kèm. Chỉ các đoạn liên quan từ tài liệu đã chọn mới được đưa vào lượt trả lời và lượt kiểm tra lại của Gemini; không chọn thì Gemini không nhận tài liệu.
-- Có thể chọn nhiều bài luyện tập cùng môn thành một chuỗi thu thập cache. Extension tự áp dụng mọi đáp án hợp lệ mà không dừng vì Gemini thiếu chắc chắn, luôn dừng để người dùng tự nộp, lưu đáp án từ trang xem lại rồi chuyển sang bài tiếp theo. Lỗi thật sự hoặc dạng câu chưa hỗ trợ vẫn dừng để tránh điền sai âm thầm.
-- Trước bài kiểm tra có thể chọn nhiều kho cache; chỉ dùng khi các kho chứa câu đó đồng thuận, còn mâu thuẫn sẽ chuyển sang Gemini/tài liệu.
-- Lần làm sau, bộ nhớ đáp án được đối chiếu theo nội dung câu hỏi và nội dung lựa chọn, nên không phụ thuộc thứ tự A/B/C/D.
-- Có thể xem số đáp án đã nhớ hoặc xóa toàn bộ bộ nhớ trong tab **Cài đặt**.
-- Tab **Cài đặt** hiển thị dung lượng cục bộ, cho phép xóa riêng API key hoặc reset toàn bộ dữ liệu extension với bước xác nhận chống bấm nhầm.
-- Tab **Tài liệu** tự nhận diện slide, giáo trình và bài giảng theo từng tuần, đọc nội dung PDF rồi lập chỉ mục cục bộ.
-- Có thể tìm từ khóa trong toàn môn mà không cần Gemini, hoặc nhờ Gemini tổng hợp từ các đoạn liên quan nhất và dẫn lại đúng tài liệu, tuần, số trang.
-- Có thể cập nhật/xóa chỉ mục riêng từng môn; chỉ mục được giới hạn dung lượng để không làm nặng hồ sơ Chrome.
-- Trong **Cài đặt**, có thể bật/tắt việc tham khảo chỉ mục tài liệu khi Gemini trả lời quiz. Lựa chọn được lưu lại; khi tắt, Gemini tự suy luận chỉ từ câu hỏi và phương án.
+| Provider | Trạng thái | Ghi chú |
+| --- | --- | --- |
+| ChatGPT Web | READY | Gửi prompt và đọc phản hồi mới trong tab đã bind. |
+| Claude Web | READY khi đăng nhập | Kiểm tra editor trước khi bắt đầu. |
+| Gemini Web | READY | Gửi prompt và nhận response trong tab Gemini đã bind. |
+| DeepSeek Web | READY khi đăng nhập | Hỗ trợ gửi prompt, đọc JSON streaming, ảnh và tạo chat mới. |
+| Local AI Web fixture | TEST ONLY | Hoàn tất pipeline tự động trong môi trường giả lập `127.0.0.1`; không gọi dịch vụ AI thật. |
 
-## Chạy dự án
+Extension không dùng API riêng của OpenAI/Claude làm provider chính và không yêu cầu các API key đó cho AI Web. Cấu hình/key cũ được giữ trong storage; các mục API legacy không xuất hiện trong provider selector chính. Không dùng private endpoint, cookie hay session token để vượt giới hạn của website.
 
-```bash
+### Audit cầu nối `Extension_Protoeic`
+
+Đã đọc manifest, service worker, `content/gemini.js`, `content/protoeic.js` và README trong project tham khảo. TNU chỉ tái sử dụng ý tưởng định tuyến request có ID, báo tiến độ/result/error qua background, tách bước submit khỏi bước chờ phản hồi, và xác minh chat mới trước khi dùng. Các ý tưởng này đã được ánh xạ vào `ANSWER_QUESTION`, lifecycle `waiting → dispatching → in_flight → completed/unknown`, `WebAIAdapter`, correlation bằng `sessionId/requestId/executionEpoch/questionId`, và `createVerifiedConversation`.
+
+Không chép `findOrCreateGeminiTab()` vì nó chọn tab Gemini được dùng gần nhất thay vì tab người dùng bind. Không chép `fillEditor()` hoặc selector DOM của Gemini. Không chép polling `model-response` với ngưỡng ổn định 2,2 giây, retry tự gửi ở chat mới sau timeout, hay parser A–D; các cách đó không xác nhận chắc request đã hoàn tất, có thể gửi trùng và không ánh xạ được option ID của TNU. Không dùng bộ trích xuất câu hỏi ProTOEIC cho Moodle.
+
+V3.2 dùng content script trên đúng tab người dùng chọn. Nó không đọc cookie/token, không gọi private endpoint và không tự tìm tab gần nhất. Mỗi response phải khớp session, request, execution epoch, question và conversation hiện tại; response cũ bị loại bỏ.
+
+## Sử dụng với hai cửa sổ Chrome/Edge
+
+1. Cài extension từ `release/v3.3.1/chrome-mv3` hoặc `release/v3.3.1/edge-mv3`.
+2. Mở trang làm bài TNU và mở tab AI Web trong **cùng một profile trình duyệt**.
+3. Mở **Hàng đợi**, chọn tab TNU, provider Web và tab AI; bấm **Liên kết hai tab**.
+4. Bấm **Kiểm tra liên kết** để xác nhận editor, đăng nhập và conversation identity.
+5. Chọn bài và **Từ câu hiện tại**. Extension gửi prompt, ảnh nếu provider nhận được file input, cache và tài liệu đã chọn sang tab AI rồi chỉ nhận JSON khớp request.
+
+Danh sách tab dùng các tab mà extension nhìn thấy trong profile hiện tại. Window ID và Tab ID được lưu cùng phiên; đổi focus giữa cửa sổ không làm mất binding. Đóng, tải lại hoặc chuyển tab sang domain khác sẽ yêu cầu bind lại. Nếu editor hoặc nút gửi của provider thay đổi, bước **Kiểm tra liên kết** sẽ báo lỗi trước khi bắt đầu.
+
+## Gemini API
+
+Trong tab **AI**, Gemini API giữ key, model discovery từ danh sách model hỗ trợ `generateContent`, kiểm tra khả năng, retry có điều kiện, ngân sách usage và kiểm tra phản hồi. Các lời gọi API thật chỉ phát sinh khi người dùng chọn Gemini API, cấu hình key và bắt đầu yêu cầu. Key lưu trong `chrome.storage.local`, không phải kho bí mật được mã hóa.
+
+Trong **Cài đặt**, có prompt riêng cho Gemini API, chế độ cache, số đoạn tài liệu, ngưỡng tin cậy, retry, giới hạn yêu cầu/token/chi phí ước tính và chế độ kiểm tra kép. Các key OpenAI/Claude đã lưu không bị xóa, nhưng không cần dùng cho provider Web hoặc Gemini API chính.
+
+## Dữ liệu câu hỏi, ảnh, cache và tài liệu
+
+Question builder dùng nội dung, loại câu, lựa chọn, ảnh TNU, cache theo chế độ đã chọn và các đoạn tài liệu được chọn. Prompt gắn Request ID/Question ID, yêu cầu trả JSON bằng option ID ổn định, và đánh dấu cache/tài liệu là dữ liệu tham khảo. Ảnh được xác minh trước khi gửi; lỗi đọc hoặc đính kèm làm dừng câu đó. Tối đa 5 đoạn tài liệu được dùng mặc định, có thể tăng tới 20.
+
+Tab **Tài liệu** lập chỉ mục PDF cục bộ theo môn. Người dùng có thể tìm từ khóa hoặc chọn các tài liệu sẽ được đưa vào câu hỏi. Cache đáp án chỉ được học khi người dùng tự nộp và Moodle hiển thị trang xem lại có đáp án đúng.
+
+## Dừng, đổi provider và khôi phục
+
+- **Dừng** vô hiệu hóa execution epoch cũ, abort observer và giữ vị trí câu.
+- Khi đổi provider/model, phiên chỉ tiếp tục với lựa chọn đã xác nhận và binding mới.
+- Response đến muộn không được áp dụng vào TNU.
+- Nếu kết quả gửi đi chưa rõ, phiên chuyển sang UNKNOWN và không tự gửi lại. Nếu fixture xác nhận generation đã dừng thì có thể Resume an toàn; nếu không, người dùng phải kiểm tra tab AI và đối soát rõ ràng.
+- Worker MV3 restart khôi phục run từ storage; response đã lưu được dùng lại mà không gửi request lần hai.
+- Bài kiểm tra tính điểm vẫn dừng để người dùng xác nhận. Extension không bấm **Nộp bài và kết thúc**.
+
+Conversation rotation mặc định sau 10 câu hoàn tất, cấu hình tại **Cài đặt**; `0` tắt rotation. Adapter xác minh identity chat mới trước khi gửi câu tiếp theo. Gemini API dùng request độc lập, không dùng bộ đếm chat.
+
+## Chạy và kiểm thử
+
+```powershell
 npm install
-npm run test
-npm run build
+npm run typecheck
+npm test
+npm run test:coverage
+npm run build:release
+npm run test:release
 ```
 
-Sau khi build, mở `chrome://extensions` hoặc `edge://extensions`, bật **Chế độ dành cho nhà phát triển**, chọn **Tải tiện ích đã giải nén**, rồi chọn thư mục `.output/chrome-mv3`.
+`test:e2e:web` mở TNU fixture và local AI fixture trong hai cửa sổ trình duyệt, kiểm tra streaming, ảnh, rotation, Stop/switch/resume và dừng trước khi nộp. `test:e2e`/`test:e2e:auto` kiểm tra các luồng API fixture cũ; chúng không gọi API thật. `test:release` kiểm checksum artifact rồi chạy E2E trên đúng bản Chrome/Edge build.
 
-## Quyền riêng tư
+### Release artifacts
 
-- API key Gemini được lưu trong `chrome.storage.local` và chỉ cho extension truy cập. Khu vực này không phải kho bí mật được mã hóa.
-- Khi làm quiz, chỉ nội dung câu hỏi, phương án và ảnh thuộc câu hỏi được gửi tới Gemini. Khi hỏi tài liệu, chỉ tối đa tám đoạn khớp nhất được gửi, không gửi toàn bộ tệp.
-- Không gửi cookie, tên tài khoản hoặc toàn bộ HTML trang.
-- Bộ nhớ đáp án đúng được lưu cục bộ, tối đa 3.000 câu. Nội dung này có thể xóa bất kỳ lúc nào trong extension.
-- Văn bản trích từ slide/giáo trình được lưu trong vùng dữ liệu riêng của extension; có thể xóa theo môn hoặc reset toàn bộ.
+`npm run build:release` tạo thư mục riêng, không xóa `.output` và không đóng/kill Chrome/Edge. Release trước được giữ để rollback.
 
-## Chốt an toàn
+- Chrome: `release/v3.3.1/chrome-mv3`
+- Edge: `release/v3.3.1/edge-mv3`
+- SHA-256 receipt: `release/v3.3.1/release-manifest.json`
 
-- Chỉ `practice` mới được tự chọn đáp án.
-- `graded` và loại không xác định chỉ hiển thị gợi ý, chờ người dùng bấm **Áp dụng**.
-- Confidence thấp, lỗi API hoặc loại câu không hỗ trợ đều làm phiên chạy tạm dừng.
-- Không có luồng bấm `submitall`/“Nộp bài và kết thúc”.
+Trong `chrome://extensions` hoặc `edge://extensions`, bật **Chế độ dành cho nhà phát triển**, bấm **Tải tiện ích đã giải nén** và chọn thư mục tương ứng.
+
+### Smoke test Gemini API thật
+
+Mặc định runner không gửi yêu cầu. `npm run test:real-api` chỉ chạy Gemini API khi người dùng chủ động bật `TNU_REAL_SMOKE=1`, cung cấp `GEMINI_API_KEY`, `TNU_GEMINI_MODEL`, giá tham khảo, `TNU_REAL_SMOKE_MAX_REQUESTS` (tối đa 3, gồm model discovery) và `TNU_REAL_SMOKE_MAX_COST_USD` lớn hơn 0. Nếu thiếu cấu hình, trạng thái là **NOT RUN**. AI Web được kiểm thử riêng qua content bridge và fixture trình duyệt.
+
+## Quyền riêng tư và an toàn
+
+- API key, cache đáp án, cài đặt và chỉ mục tài liệu lưu trong profile extension; có thể xóa trong **Cài đặt**.
+- Khi chọn Gemini API, nội dung câu hỏi, ảnh và tài liệu/cache đã chọn được gửi tới Google Gemini API. Không gửi cookie hoặc toàn bộ HTML TNU.
+- Khi dùng local fixture, nội dung chỉ được gửi tới máy chủ giả lập loopback do bộ E2E khởi động.
+- Khi chọn AI Web, prompt, ảnh, cache và tài liệu đã chọn được đưa vào tab provider mà người dùng đã bind.
+- Chỉ bài luyện tập được tự điền theo thiết lập. Bài tính điểm cần xác nhận; extension luôn dừng trước bước nộp.

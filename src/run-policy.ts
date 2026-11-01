@@ -1,14 +1,25 @@
-import type { AnswerDecision, QuizTarget, RunSession } from "./types";
+import type { AnswerDecision, QuizTarget, RunSession, UncertainMode } from "./types";
+
+export function questionStartIndex(run: Pick<RunSession, "mode" | "startAnchorUsed" | "startAnchorPage" | "startAnchorIndex">, page: number, visibleIndex: number): number {
+  if (run.mode !== "from_current") return 0;
+  if (!run.startAnchorUsed) return visibleIndex;
+  return run.startAnchorPage === page ? run.startAnchorIndex ?? 0 : 0;
+}
 
 type DecisionPauseRun = Pick<RunSession, "target" | "practiceBatch" | "reviewEveryAnswer">;
 
-export function shouldPauseForDecision(run: DecisionPauseRun, decision: AnswerDecision, confidenceThreshold: number): boolean {
+export function shouldPauseForDecision(
+  run: DecisionPauseRun,
+  decision: AnswerDecision,
+  confidenceThreshold: number,
+  uncertainMode: UncertainMode
+): boolean {
   const isPracticeBatch = run.target.assessmentKind === "practice" && Boolean(run.practiceBatch);
   if (isPracticeBatch) return false;
   return run.target.assessmentKind !== "practice"
     || run.reviewEveryAnswer
-    || decision.needsHumanReview
-    || decision.confidence < confidenceThreshold;
+    || !decision.selectedOptionIds.length
+    || (uncertainMode === "ask" && (decision.needsHumanReview || decision.confidence < confidenceThreshold));
 }
 
 export interface PracticeBatchReviewStep {

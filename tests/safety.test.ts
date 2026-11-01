@@ -7,6 +7,7 @@ describe("submission safety", () => {
   const storageSource = readFileSync(new URL("../src/storage.ts", import.meta.url), "utf8");
   const panelSource = readFileSync(new URL("../entrypoints/sidepanel/App.tsx", import.meta.url), "utf8");
   const backgroundSource = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
+  const typesSource = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
   it("does not target Moodle final-submit controls", () => {
     expect(contentSource).not.toMatch(/querySelector[^\n]*submitall/i);
@@ -41,5 +42,22 @@ describe("submission safety", () => {
     const updates = contentSource.match(/type:\s*"UPDATE_RUN"/g) ?? [];
     const guardedUpdates = contentSource.match(/type:\s*"UPDATE_RUN",\s*runId:/g) ?? [];
     expect(guardedUpdates).toHaveLength(updates.length);
+  });
+
+  it("keeps API key values out of runtime message schemas and content code", () => {
+    expect(typesSource).not.toContain('type: "SAVE_API_KEY"');
+    expect(typesSource).not.toContain('type: "SAVE_PROVIDER_KEY"');
+    expect(typesSource).not.toContain('apiKey: string');
+    expect(contentSource).not.toMatch(/storage\.(local|sync)/);
+    expect(contentSource).not.toMatch(/geminiApiKey|openaiApiKey|anthropicApiKey/);
+    expect(panelSource).not.toMatch(/runtime\(\{[^}]*apiKey\s*:/s);
+    expect(storageSource).toContain("accessLevel: \"TRUSTED_CONTEXTS\"");
+    expect(backgroundSource).toContain("EXTENSION_ONLY_TYPES.has(message.type)");
+  });
+
+  it("does not write keys to synchronized storage or log provider response bodies", () => {
+    expect(storageSource).not.toContain("storage.sync");
+    expect(backgroundSource).not.toContain("console.log");
+    expect(backgroundSource).not.toContain("apiKey: message.apiKey");
   });
 });

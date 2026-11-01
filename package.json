@@ -1,6 +1,6 @@
 {
   "name": "tnu-gemini-study-assistant",
-  "version": "0.1.0",
+  "version": "3.3.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,15 @@
     "zip": "wxt zip",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "node scripts/e2e-smoke.mjs",
+    "test:e2e:auto": "node scripts/e2e-auto.mjs",
+    "test:e2e:web": "node scripts/e2e-web-tabs.mjs",
+    "test:e2e:live-web": "node scripts/e2e-live-web-bridge.mjs",
+    "test:real-api": "node scripts/real-api-smoke.mjs",
+    "build:release": "node scripts/build-release.mjs",
+    "test:release": "node scripts/test-release.mjs",
+    "validate:release": "node scripts/validate-release.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -26,7 +35,9 @@
   "devDependencies": {
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
+    "@vitest/coverage-v8": "^3.2.7",
     "jsdom": "^26.1.0",
+    "playwright-core": "^1.64.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

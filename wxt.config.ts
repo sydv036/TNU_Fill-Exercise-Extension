@@ -1,18 +1,26 @@
 import { defineConfig } from "wxt";
 
 export default defineConfig({
+  outDir: process.env.TNU_RELEASE_DIR || ".output",
   modules: ["@wxt-dev/module-react"],
   vite: () => ({
     build: { assetsInlineLimit: 0 }
   }),
   manifest: {
-    name: "TNU Gemini Study Assistant",
-    description: "Hỗ trợ luyện tập Moodle TNU với Gemini và luôn dừng trước bước nộp bài.",
-    version: "0.1.0",
+    name: "TNU Fill Exercise Assistant",
+    description: "Hỗ trợ luyện tập Moodle TNU với Gemini API và tab Gemini, ChatGPT, Claude hoặc DeepSeek Web; luôn dừng trước bước nộp bài.",
+    version: "3.3.1",
     minimum_chrome_version: "114",
     permissions: ["storage", "tabs", "sidePanel", "notifications"],
     host_permissions: [
       "https://tnu.aum.edu.vn/*",
+      "https://gemini.google.com/*",
+      "https://chatgpt.com/*",
+      "https://chat.openai.com/*",
+      "https://claude.ai/*",
+      "https://chat.deepseek.com/*",
+      "http://127.0.0.1/*",
+      "http://localhost/*",
       "https://generativelanguage.googleapis.com/*"
     ],
     web_accessible_resources: [{

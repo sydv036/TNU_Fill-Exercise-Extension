@@ -94,12 +94,25 @@ export function makeMemoryEntry(
   };
 }
 
+export function selectedMemoryEvidence(entries: AnswerMemoryEntry[], target: QuizTarget, question: QuestionSnapshot, keys: string[]): string[] {
+  if (question.images.length || !keys.length) return [];
+  const allowed = new Set(keys);
+  const labels = question.options.map((option) => canonicalOptionLabel(option.label));
+  return entries.filter((entry) => entry.courseId === target.courseId && allowed.has(entry.quizKey)
+    && entry.questionType === question.type && promptSimilarity(entry.prompt, question.prompt) >= 0.9
+    && entry.correctOptionLabels.length > 0 && entry.correctOptionLabels.every((label) => labels.filter((current) => current === canonicalOptionLabel(label)).length === 1))
+    .slice(0, 10)
+    .map((entry) => `[${[entry.courseName, entry.week, entry.quizName].filter(Boolean).join(" # ") || entry.quizKey}] ${entry.correctOptionLabels.join("; ")}`);
+}
+
 export function findMemoryDecision(
   entries: AnswerMemoryEntry[],
   target: QuizTarget,
   question: QuestionSnapshot,
   memorySourceQuizKeys: string[] | string | null | undefined = undefined
 ): AnswerDecision | undefined {
+  // Legacy entries do not contain image identity; text alone cannot establish a match.
+  if (question.images.length) return undefined;
   if (memorySourceQuizKeys === null) return undefined;
   const keys = Array.isArray(memorySourceQuizKeys)
     ? memorySourceQuizKeys
@@ -107,7 +120,7 @@ export function findMemoryDecision(
   if (!keys.length) return undefined;
   const allowedKeys = new Set(keys);
   const rankedCandidates = entries
-    .filter((item) => item.courseId === target.courseId && allowedKeys.has(item.quizKey) && item.correctOptionLabels.length > 0)
+    .filter((item) => item.courseId === target.courseId && allowedKeys.has(item.quizKey) && item.questionType === question.type && item.correctOptionLabels.length > 0)
     .map((item) => {
       const exactPrompt = promptIdentity(item.prompt) === promptIdentity(question.prompt);
       const similarity = exactPrompt ? 1 : promptSimilarity(item.prompt, question.prompt);

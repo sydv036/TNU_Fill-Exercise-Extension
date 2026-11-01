@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findMemoryDecision, makeMemoryEntry, mergeAnswerMemory } from "../src/answer-memory";
+import { findMemoryDecision, makeMemoryEntry, mergeAnswerMemory, selectedMemoryEvidence } from "../src/answer-memory";
 import { extractReviewAnswerEntries } from "../src/moodle";
 import type { QuestionSnapshot, QuizTarget } from "../src/types";
 
@@ -14,11 +14,32 @@ function doc(html: string): Document {
 }
 
 describe("answer memory", () => {
+  it("does not reuse legacy cache for images or a different question type", () => {
+    const question: QuestionSnapshot = { id: "q", number: "1", type: "single", prompt: "2 + 2?", images: [], options: [{ id: "option_0", label: "4", selected: false }] };
+    const entry = makeMemoryEntry(target, question, ["4"], "review");
+    expect(findMemoryDecision([entry], target, { ...question, type: "multiple" })).toBeUndefined();
+    expect(findMemoryDecision([entry], target, { ...question, images: [{ mimeType: "image/png", data: "abc" }] })).toBeUndefined();
+  });
+
+  it("includes only matching selected cache sources in evidence", () => {
+    const question: QuestionSnapshot = { id: "q", number: "1", type: "single", prompt: "2 + 2?", images: [], options: [{ id: "option_0", label: "4", selected: false }] };
+    const entry = makeMemoryEntry(target, question, ["4"], "review");
+    expect(selectedMemoryEvidence([entry], target, question, [entry.quizKey])).toHaveLength(1);
+    expect(selectedMemoryEvidence([entry], target, question, [])).toHaveLength(0);
+    expect(selectedMemoryEvidence([entry], target, { ...question, images: [{ mimeType: "image/png", data: "abc" }] }, [entry.quizKey])).toHaveLength(0);
+  });
   it("extracts only the option Moodle marks as correct on a review page", () => {
     const document = doc(`<div class="que" id="q1"><div class="qtext">SMART dùng để làm gì?</div><div class="answer"><div class="r0 incorrect"><input id="a0" type="radio"><label for="a0">A. Lập lịch</label></div><div class="r1 correct"><input id="a1" type="radio" checked><label for="a1">B. Thiết lập mục tiêu</label></div></div></div>`);
     const entries = extractReviewAnswerEntries(document, target, "https://tnu.aum.edu.vn/mod/quiz/review.php?cmid=500414");
     expect(entries).toHaveLength(1);
     expect(entries[0]!.correctOptionLabels).toEqual(["thiet lap muc tieu"]);
+  });
+
+  it("learns selected answers when the review state says Đúng", () => {
+    const document = doc('<div class="que" id="q"><div class="state">Đúng</div><div class="qtext">Câu hỏi?</div><div class="answer"><label><input type="radio" checked>Đáp án đúng</label><label><input type="radio">Khác</label></div></div>');
+    const entries = extractReviewAnswerEntries(document, target, "review");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.correctOptionLabels).toEqual(["đap an đung"]);
   });
 
   it("does not confuse a short option with a longer answer in review feedback", () => {

@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": 429,
+    "message": "Resource has been exhausted.",
+    "status": "RESOURCE_EXHAUSTED",
+    "details": [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT_EXCEEDED" }]
+  }
+}
