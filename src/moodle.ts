@@ -80,6 +80,46 @@ export function parseCourseActivities(
   return weeks;
 }
 
+export function parseReviewTarget(document: Document, baseUrl: string): QuizTarget | undefined {
+  let current: URL;
+  try { current = new URL(baseUrl); } catch { return undefined; }
+  const cmid = current.searchParams.get("cmid");
+  if (!cmid || !current.pathname.includes("/mod/quiz/review.php")) return undefined;
+
+  const breadcrumbs = [...document.querySelectorAll<HTMLAnchorElement>('.breadcrumb a, [aria-label*="Đường dẫn"] a, .page-navbar a')];
+  // Moodle also renders unrelated courses in the navigation drawer. Prefer
+  // the course in the review breadcrumb so a standalone review is not saved
+  // under whichever course happens to appear first in the page DOM.
+  const courseLink = breadcrumbs
+    .filter((link) => (link.getAttribute("href") ?? "").includes("/course/view.php?id="))
+    .find((link) => !(link.getAttribute("href") ?? "").includes("#section-"))
+    ?? breadcrumbs.find((link) => (link.getAttribute("href") ?? "").includes("/course/view.php?id="))
+    ?? document.querySelector<HTMLAnchorElement>('a[href*="/course/view.php?id="]');
+  const quizLink = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/mod/quiz/view.php?id="]')]
+    .find((link) => {
+      try { return new URL(link.href, baseUrl).searchParams.get("id") === cmid; } catch { return false; }
+    });
+  let courseId = "";
+  try { courseId = courseLink ? new URL(courseLink.href, baseUrl).searchParams.get("id") ?? "" : ""; } catch { /* invalid breadcrumb */ }
+  if (!courseId || !quizLink) return undefined;
+
+  const weekLink = breadcrumbs.find((link) => (link.getAttribute("href") ?? "").includes(`#section-`));
+  const courseName = cleanActivityName(courseLink!.textContent || courseLink!.getAttribute("title") || `Môn ${courseId}`);
+  const name = cleanActivityName(quizLink.textContent || quizLink.getAttribute("title") || `Bài ${cmid}`);
+  const categoryLink = breadcrumbs.find((link) => (link.getAttribute("href") ?? "").includes("/course/index.php?categoryid="));
+  return {
+    id: `${courseId}:${cmid}`,
+    url: absoluteUrl(quizLink.getAttribute("href") ?? `/mod/quiz/view.php?id=${cmid}`, baseUrl),
+    courseId,
+    courseName,
+    category: cleanActivityName(categoryLink?.textContent ?? "Khóa học của tôi"),
+    week: cleanActivityName(weekLink?.textContent ?? "Phần đã hoàn thành"),
+    name,
+    assessmentKind: classifyAssessment(`${weekLink?.textContent ?? ""} ${name}`, { practiceKeywords: ["luyện tập", "thực hành", "practice"], gradedKeywords: ["kiểm tra", "thi", "exam"] }),
+    source: "auto"
+  };
+}
+
 function labelForInput(input: HTMLInputElement): string {
   const escapedId = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(input.id) : input.id.replace(/[:.]/g, "\\$&");
   const explicit = input.id ? input.ownerDocument.querySelector<HTMLLabelElement>(`label[for="${escapedId}"]`) : null;
@@ -91,7 +131,11 @@ function questionChoiceInputs(element: HTMLElement): HTMLInputElement[] {
   const answerRoot = element.querySelector<HTMLElement>(".answer") ?? element.querySelector<HTMLElement>(".formulation") ?? element;
   return [...answerRoot.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
     .filter((input) => !input.className.includes("questionflag")
-      && !input.closest('.info, .questionflag, [class*="questionflag"]')
+      // Moodle may wrap the whole review in `.questionflagsaveform`. Looking
+      // for any ancestor whose class contains `questionflag` therefore drops
+      // every real answer input. Only exclude the flag control itself or its
+      // immediate flag/info containers.
+      && !input.closest('.info, .questionflag')
       && !/flag/i.test(input.name));
 }
 

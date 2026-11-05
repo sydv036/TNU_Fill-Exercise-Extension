@@ -101,8 +101,9 @@ for (const browserId of ["chrome", "edge"]) {
   run("scripts/e2e-smoke.mjs", env, `${browserId} artifact · workflow / stop-resume / stale-response / worker restart`);
   run("scripts/e2e-web-tabs.mjs", env, `${browserId} artifact · two-window TNU → local Web fixture → TNU, rotation, Stop/Switch/Resume`);
   run("scripts/e2e-live-web-bridge.mjs", env, `${browserId} artifact · Gemini/ChatGPT/Claude live content bridge DOM compatibility`);
+  run("scripts/e2e-scorm.mjs", env, `${browserId} artifact · SCORM 8× / auto-next / interaction stop`);
   run("scripts/e2e-auto.mjs", env, `${browserId} artifact · API fixture / fallback / budget / error regression`);
   run("scripts/e2e-ui-release.mjs", env, `${browserId} artifact · sidepanel / provider / model / capability / unknown usage UI`);
 }
 
-console.log("PASS: all E2E suites loaded the exact checksum-verified V3.2 release artifacts. No real provider API was enabled.");
+console.log(`PASS: all E2E suites loaded the exact checksum-verified V${packageInfo.version} release artifacts. No real provider API was enabled.`);

@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS } from "./defaults";
 import { mergeAnswerMemory, quizKey } from "./answer-memory";
-import type { AnswerMemoryEntry, AnswerMemorySource, ApiProviderId, AppSettings, AppState, CourseIndex, KnowledgeIndex, KnowledgeIndexSummary, LogEntry, ModelCapability, QuizTarget, RunSession, WebTabBinding } from "./types";
+import type { AnswerMemoryEntry, AnswerMemorySource, ApiProviderId, AppSettings, AppState, CourseIndex, KnowledgeIndex, KnowledgeIndexSummary, LogEntry, ModelCapability, QuizTarget, RunSession, ScormStatus, WebTabBinding } from "./types";
 import { isValidModelPrice } from "./run-budget";
 
 const KEYS = {
@@ -17,6 +17,7 @@ const KEYS = {
   knowledgeIndexes: "knowledgeIndexes",
   reviewCaptures: "reviewCaptures"
 } as const;
+const SCORM_STATUS_KEY = "scormStatus";
 const CREDENTIAL_LEASE_KEY = "credentialChangeLease";
 const WEB_TAB_BINDING_KEY = "webTabBinding";
 
@@ -37,7 +38,17 @@ export function migrateSettings(value: unknown): AppSettings {
   const apiProviders = ["gemini_api", "openai_api", "anthropic_api"] as const;
   const validOrder = Array.isArray(stored.fallbackOrder) && stored.fallbackOrder.length === 3 && new Set(stored.fallbackOrder).size === 3 && stored.fallbackOrder.every((id) => apiProviders.includes(id));
   const modelPrices = Array.isArray(stored.modelPrices) ? stored.modelPrices.filter(isValidModelPrice).slice(0, 30) : [];
-  return { ...DEFAULT_SETTINGS, ...stored, modelPrices, unknownUsagePolicy: stored.unknownUsagePolicy === "warn_and_continue" ? "warn_and_continue" : "stop", maxCostUsd: typeof stored.maxCostUsd === "number" && Number.isFinite(stored.maxCostUsd) ? Math.max(0, Math.min(1000000, stored.maxCostUsd)) : 0, fallbackEnabled: stored.fallbackEnabled === true, fallbackOrder: validOrder ? stored.fallbackOrder! : [...DEFAULT_SETTINGS.fallbackOrder], fallbackMax: Number.isSafeInteger(stored.fallbackMax) ? Math.max(0, Math.min(2, stored.fallbackMax!)) : 2, maxRequests: Number.isSafeInteger(stored.maxRequests) ? Math.max(0, Math.min(100000, stored.maxRequests!)) : 0, maxTokens: Number.isSafeInteger(stored.maxTokens) ? Math.max(0, Math.min(1000000000, stored.maxTokens!)) : 0, selectionRevision: typeof stored.selectionRevision === "string" && stored.selectionRevision ? stored.selectionRevision : DEFAULT_SETTINGS.selectionRevision, provider: providers.includes(stored.provider as AppSettings["provider"]) ? stored.provider! : "gemini_api", cacheMode: cacheModes.includes(stored.cacheMode as AppSettings["cacheMode"]) ? stored.cacheMode! : "priority", documentLimit: Number.isInteger(stored.documentLimit) ? Math.max(1, Math.min(20, stored.documentLimit!)) : 5, manualRotationEvery: Number.isInteger(stored.manualRotationEvery) ? Math.max(0, Math.min(100, stored.manualRotationEvery!)) : 10, timeoutMs: Number.isFinite(stored.timeoutMs) ? Math.max(5_000, Math.min(120_000, stored.timeoutMs!)) : DEFAULT_SETTINGS.timeoutMs, webTimeoutMs: Number.isFinite(stored.webTimeoutMs) ? Math.max(30_000, Math.min(1_800_000, stored.webTimeoutMs!)) : DEFAULT_SETTINGS.webTimeoutMs, schemaVersion: 9 };
+  const allowedScormRates = [1, 1.5, 2, 3, 4, 6, 8];
+  return { ...DEFAULT_SETTINGS, ...stored, modelPrices, unknownUsagePolicy: stored.unknownUsagePolicy === "warn_and_continue" ? "warn_and_continue" : "stop", maxCostUsd: typeof stored.maxCostUsd === "number" && Number.isFinite(stored.maxCostUsd) ? Math.max(0, Math.min(1000000, stored.maxCostUsd)) : 0, fallbackEnabled: stored.fallbackEnabled === true, fallbackOrder: validOrder ? stored.fallbackOrder! : [...DEFAULT_SETTINGS.fallbackOrder], fallbackMax: Number.isSafeInteger(stored.fallbackMax) ? Math.max(0, Math.min(2, stored.fallbackMax!)) : 2, maxRequests: Number.isSafeInteger(stored.maxRequests) ? Math.max(0, Math.min(100000, stored.maxRequests!)) : 0, maxTokens: Number.isSafeInteger(stored.maxTokens) ? Math.max(0, Math.min(1000000000, stored.maxTokens!)) : 0, selectionRevision: typeof stored.selectionRevision === "string" && stored.selectionRevision ? stored.selectionRevision : DEFAULT_SETTINGS.selectionRevision, provider: providers.includes(stored.provider as AppSettings["provider"]) ? stored.provider! : "gemini_api", cacheMode: cacheModes.includes(stored.cacheMode as AppSettings["cacheMode"]) ? stored.cacheMode! : "priority", documentLimit: Number.isInteger(stored.documentLimit) ? Math.max(1, Math.min(20, stored.documentLimit!)) : 5, manualRotationEvery: Number.isInteger(stored.manualRotationEvery) ? Math.max(0, Math.min(100, stored.manualRotationEvery!)) : 10, delayMs: Number.isFinite(stored.delayMs) ? Math.max(0, Math.min(60_000, stored.delayMs!)) : DEFAULT_SETTINGS.delayMs, timeoutMs: Number.isFinite(stored.timeoutMs) ? Math.max(5_000, Math.min(120_000, stored.timeoutMs!)) : DEFAULT_SETTINGS.timeoutMs, webTimeoutMs: Number.isFinite(stored.webTimeoutMs) ? Math.max(30_000, Math.min(1_800_000, stored.webTimeoutMs!)) : DEFAULT_SETTINGS.webTimeoutMs, scormEnabled: stored.scormEnabled === true, scormPlaybackRate: allowedScormRates.includes(stored.scormPlaybackRate ?? NaN) ? stored.scormPlaybackRate! : DEFAULT_SETTINGS.scormPlaybackRate, scormAutoNext: stored.scormAutoNext !== false, scormNextDelayMs: Number.isFinite(stored.scormNextDelayMs) ? Math.max(0, Math.min(10_000, stored.scormNextDelayMs!)) : DEFAULT_SETTINGS.scormNextDelayMs, scormPauseOnInteraction: stored.scormPauseOnInteraction !== false, schemaVersion: 10 };
+}
+
+export async function getScormStatus(): Promise<ScormStatus | undefined> {
+  const value = await browser.storage.session.get(SCORM_STATUS_KEY);
+  return value[SCORM_STATUS_KEY] as ScormStatus | undefined;
+}
+
+export async function saveScormStatus(status: ScormStatus): Promise<void> {
+  await browser.storage.session.set({ [SCORM_STATUS_KEY]: status });
 }
 
 export async function getWebTabBinding(): Promise<WebTabBinding | undefined> {
@@ -224,7 +235,8 @@ export async function getState(): Promise<AppState> {
     storageBytes: await browser.storage.local.getBytesInUse(null),
     run: await getRun(),
     browserTabs: [],
-    webTabBinding: local[WEB_TAB_BINDING_KEY] as WebTabBinding | undefined
+    webTabBinding: local[WEB_TAB_BINDING_KEY] as WebTabBinding | undefined,
+    scormStatus: await getScormStatus()
   };
 }
 

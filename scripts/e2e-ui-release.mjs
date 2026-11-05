@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const extension = path.resolve(process.env.TNU_E2E_EXTENSION || "release/v3.3.1/chrome-mv3");
+const extension = path.resolve(process.env.TNU_E2E_EXTENSION || "release/v3.4.1/chrome-mv3");
 const browserPath = process.env.TNU_E2E_BROWSER || "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const profile = await mkdtemp(path.join(tmpdir(), "tnu-ui-release-e2e-"));
 let context;

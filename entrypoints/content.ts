@@ -1,4 +1,4 @@
-import { applyVerifiedDecisionToElement, isValidSelection, matchesQuestionSnapshot, detectPageKind, extractQuestion, extractReviewAnswerEntries, findQuestionElement, markSuggestion, parseCourseActivities, parseDashboardCourses } from "../src/moodle";
+import { applyVerifiedDecisionToElement, isValidSelection, matchesQuestionSnapshot, detectPageKind, extractQuestion, extractReviewAnswerEntries, findQuestionElement, markSuggestion, parseCourseActivities, parseDashboardCourses, parseReviewTarget } from "../src/moodle";
 import { chunkText } from "../src/knowledge";
 import { isAttemptForTarget, isReviewForTarget, nextReviewPageUrl } from "../src/quiz-navigation";
 import { questionStartIndex, shouldPauseForDecision } from "../src/run-policy";
@@ -12,6 +12,19 @@ let restartRequested = false;
 
 async function runtime<T = unknown>(message: RuntimeMessage): Promise<RuntimeResponse<T>> {
   return browser.runtime.sendMessage(message) as Promise<RuntimeResponse<T>>;
+}
+
+async function runtimeWithWorkerRetry<T = unknown>(message: RuntimeMessage, attempts = 4): Promise<RuntimeResponse<T>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await runtime<T>(message);
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Service worker không phản hồi."));
 }
 
 function injectStyles(): void {
@@ -58,6 +71,28 @@ async function isCurrentRun(run: RunSession, requestId?: string): Promise<boolea
 async function isSameEpoch(run: RunSession): Promise<boolean> {
   const current = await runtime<AppState>({ type: "GET_STATE" });
   return !stopped && Boolean(run.executionEpoch && current.data?.run?.id === run.id && current.data.run.executionEpoch === run.executionEpoch && current.data.run.status !== "paused");
+}
+
+async function waitBetweenQuestions(run: RunSession): Promise<boolean> {
+  const latest = await runtime<AppState>({ type: "GET_STATE" });
+  const current = latest.data?.run;
+  if (!latest.ok || !latest.data || !current || current.id !== run.id || current.executionEpoch !== run.executionEpoch || current.status !== "answering") return false;
+  // This is an operational throttle: use the latest saved setting so changing
+  // it while a session is active affects the next AI Web dispatch.
+  const delayMs = Math.max(0, Math.min(60_000, latest.data.settings.delayMs));
+  if (!delayMs) return true;
+  await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { message: `Đang nghỉ ${(delayMs / 1000).toFixed(delayMs % 1000 ? 1 : 0)} giây trước câu tiếp theo...` } });
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return isSameEpoch(run);
+}
+
+async function extractReviewEntriesWithRetry(document: Document, target: QuizTarget): Promise<ReturnType<typeof extractReviewAnswerEntries>> {
+  let entries = extractReviewAnswerEntries(document, target, location.href);
+  for (let attempt = 0; !entries.length && attempt < 3; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    entries = extractReviewAnswerEntries(document, target, location.href);
+  }
+  return entries;
 }
 
 async function applyVerified(element: HTMLElement, snapshot: QuestionSnapshot, ids: string[], run: RunSession, requestId?: string): Promise<boolean> {
@@ -240,7 +275,7 @@ async function processAttempt(run: RunSession, state: AppState): Promise<void> {
     element.setAttribute("data-tnu-gemini-done", "true");
     processed = [...processed, question.id];
     await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { processedQuestionIds: processed, webCompletedResponse: undefined, message: `Đã xử lý ${question.number}.` } });
-    if (state.settings.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.settings.delayMs));
+    if (!await waitBetweenQuestions(run)) return;
   }
   if (stopped) return;
   if (run.dryRunLimit) {
@@ -264,35 +299,35 @@ async function processRun(): Promise<void> {
   let activeRunId: string | undefined;
   let activeEpoch: string | undefined;
   try {
-    const response = await runtime<AppState>({ type: "GET_STATE" });
-    if (!response.ok || !response.data?.run) return;
+    const response = await runtimeWithWorkerRetry<AppState>({ type: "GET_STATE" });
+    if (!response.ok || !response.data) return;
     const state = response.data;
-    const run = state.run!;
-    activeRunId = run.id;
-    activeEpoch = run.executionEpoch;
     const kind = detectPageKind(location.href, document);
-    if (run.status === "paused") return;
     if (kind === "review") {
-      if (!isReviewForTarget(location.href, run.target.url)) return;
+      const run = state.run;
+      const target = run && isReviewForTarget(location.href, run.target.url) ? run.target : parseReviewTarget(document, location.href);
+      if (!target) return;
+      activeRunId = run?.id;
+      activeEpoch = run?.executionEpoch;
       if (!document.querySelector(".que")) {
-        await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "error", error: "Trang xem lại không hiển thị chi tiết câu hỏi.", message: "Không thể đọc đáp án đúng từ trang xem lại này." } });
+        if (run) await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "error", error: "Trang xem lại không hiển thị chi tiết câu hỏi.", message: "Không thể đọc đáp án đúng từ trang xem lại này." } });
         return;
       }
-      const entries = extractReviewAnswerEntries(document, run.target, location.href);
+      const entries = await extractReviewEntriesWithRetry(document, target);
       const nextReviewUrl = nextReviewPageUrl(document, location.href);
-      const saved = await runtime<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean }>({
-        type: "SAVE_REVIEW_ANSWERS", runId: run.id, executionEpoch: run.executionEpoch ?? "", entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
+      const saved = await runtimeWithWorkerRetry<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean }>({
+        type: "SAVE_REVIEW_ANSWERS", runId: run?.id, executionEpoch: run?.executionEpoch, target, entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
       });
       if (!saved.ok) throw new Error(saved.error || "Không lưu được đáp án từ trang xem lại.");
       if (saved.data?.saved) await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${saved.data.saved} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
       else if (!entries.length) await runtime({ type: "NOTIFY", title: "Không có cache mới", message: "Trang xem lại này không có đáp án đúng có thể lưu.", level: "warning" });
       if (nextReviewUrl) {
-        if (run.practiceBatch || state.settings.autoNavigate) { if (await isSameEpoch(run)) location.assign(nextReviewUrl); }
-        else await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "paused", message: "Đã lưu trang xem lại hiện tại. Hãy chuyển sang trang xem lại tiếp theo để lưu đủ cache." } });
+        if (run?.practiceBatch || (run && state.settings.autoNavigate)) { if (await isSameEpoch(run)) location.assign(nextReviewUrl); }
+        else if (run) await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "paused", message: "Đã lưu trang xem lại hiện tại. Hãy chuyển sang trang xem lại tiếp theo để lưu đủ cache." } });
         return;
       }
       if (saved.data?.nextTarget) {
-        if (await isSameEpoch(run)) location.assign(saved.data.nextTarget.url);
+        if (run && await isSameEpoch(run)) location.assign(saved.data.nextTarget.url);
         return;
       }
       if (saved.data?.batchCompleted) {
@@ -300,6 +335,10 @@ async function processRun(): Promise<void> {
       }
       return;
     }
+    if (!state.run) return;
+    const run = state.run;
+    activeRunId = run.id;
+    activeEpoch = run.executionEpoch;
     if (run.status === "awaiting_user" && run.pendingDecision) {
       const pendingElement = findQuestionElement(run.pendingDecision.question.id);
       if (pendingElement) markSuggestion(pendingElement, run.pendingDecision.decision.selectedOptionIds);
@@ -431,6 +470,14 @@ export default defineContentScript({
       if (["RESUME_RUN", "RETRY_QUESTION"].includes(message.type)) { void processRun(); sendResponse({ ok: true }); return false; }
       return false;
     });
-    void runtime({ type: "CONTENT_READY", url: location.href }).then(() => processRun());
+    // A Manifest V3 worker may be asleep while the content script starts. The
+    // review capture must still run even if this best-effort ready signal is
+    // rejected, otherwise a fully graded review can silently remain uncached.
+    void runtimeWithWorkerRetry({ type: "CONTENT_READY", url: location.href })
+      .catch(() => undefined)
+      .finally(() => processRun());
+    window.addEventListener("pageshow", () => {
+      if (detectPageKind(location.href, document) === "review") void processRun();
+    });
   }
 });

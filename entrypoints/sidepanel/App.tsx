@@ -9,7 +9,7 @@ import { PROVIDERS } from "../../src/providers";
 import { isWebProvider } from "../../src/web-tabs";
 import type { AnswerMemorySource, AppSettings, AppState, BrowserTabSummary, GeminiModel, KnowledgeSearchResponse, QuizTarget, RunMode, RunSession, RuntimeMessage, RuntimeResponse, RunStatus, WebProviderId } from "../../src/types";
 
-type TabId = "courses" | "queue" | "run" | "knowledge" | "gemini" | "settings" | "logs";
+type TabId = "courses" | "queue" | "run" | "knowledge" | "lecture" | "gemini" | "settings" | "logs";
 
 const EMPTY_STATE: AppState = { settings: DEFAULT_SETTINGS, apiKeyPresent: false, providerKeys: { openai_api: false, anthropic_api: false }, modelCapabilities: [], queue: [], logs: [], answerMemoryCount: 0, answerMemorySources: [], knowledgeIndexes: [], storageBytes: 0, browserTabs: [] };
 const TAB_ITEMS: Array<{ id: TabId; label: string; icon: string }> = [
@@ -17,6 +17,7 @@ const TAB_ITEMS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "queue", label: "Hàng đợi", icon: "≡" },
   { id: "run", label: "Đang chạy", icon: "▶" },
   { id: "knowledge", label: "Tài liệu", icon: "⌕" },
+  { id: "lecture", label: "Bài giảng", icon: "⏩" },
   { id: "gemini", label: "AI", icon: "✦" },
   { id: "settings", label: "Cài đặt", icon: "⚙" },
   { id: "logs", label: "Nhật ký", icon: "◷" }
@@ -120,11 +121,44 @@ export default function App() {
       {tab === "queue" && <Queue state={state} busy={busy} act={act} setTab={setTab} />}
       {tab === "run" && <RunPanel state={state} busy={busy} act={act} />}
       {tab === "knowledge" && <KnowledgePanel state={state} busy={busy} act={act} />}
+      {tab === "lecture" && <LecturePanel state={state} busy={busy} act={act} />}
       {tab === "gemini" && <GeminiPanel state={state} busy={busy} act={act} />}
       {tab === "settings" && <SettingsPanel state={state} busy={busy} act={act} />}
       {tab === "logs" && <Logs state={state} />}
     </main>
   </div>;
+}
+
+function LecturePanel({ state, busy, act }: { state: AppState; busy: boolean; act: (fn: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const source = state.settings;
+  const [enabled, setEnabled] = useState(source.scormEnabled);
+  const [rate, setRate] = useState(source.scormPlaybackRate);
+  const [autoNext, setAutoNext] = useState(source.scormAutoNext);
+  const [delaySeconds, setDelaySeconds] = useState(source.scormNextDelayMs / 1000);
+  const [pauseOnInteraction, setPauseOnInteraction] = useState(source.scormPauseOnInteraction);
+  useEffect(() => {
+    setEnabled(source.scormEnabled); setRate(source.scormPlaybackRate); setAutoNext(source.scormAutoNext);
+    setDelaySeconds(source.scormNextDelayMs / 1000); setPauseOnInteraction(source.scormPauseOnInteraction);
+  }, [source.scormEnabled, source.scormPlaybackRate, source.scormAutoNext, source.scormNextDelayMs, source.scormPauseOnInteraction]);
+  const save = (nextEnabled = enabled) => runtime({ type: "SCORM_CONTROL", settings: { scormEnabled: nextEnabled, scormPlaybackRate: rate, scormAutoNext: autoNext, scormNextDelayMs: Math.round(delaySeconds * 1000), scormPauseOnInteraction: pauseOnInteraction } });
+  const status = state.scormStatus;
+  const fresh = Boolean(status && Date.now() - Date.parse(status.updatedAt) < 30_000);
+  const percent = status?.duration && status.duration > 0 ? Math.min(100, Math.max(0, ((status.currentTime ?? 0) / status.duration) * 100)) : 0;
+  const time = (seconds?: number) => Number.isFinite(seconds) ? `${Math.floor(seconds! / 60)}:${String(Math.floor(seconds! % 60)).padStart(2, "0")}` : "--:--";
+  return <section>
+    <div className="section-head"><div><h2>Bài giảng điện tử</h2><p>Tăng tốc đồng bộ âm thanh, timeline/hiệu ứng SCORM và tự chuyển slide</p></div></div>
+    <div className={`lecture-status ${fresh ? status?.state ?? "idle" : "offline"}`}><div><span>{fresh ? status?.mediaKind === "video" ? "🎬" : "🔊" : "◌"}</span><p><b>{fresh ? status?.message : "Chưa nhận diện bài giảng SCORM đang mở"}</b><small>{fresh ? `Tab ${status?.tabId} · ${status?.playbackRate ?? rate}×` : "Mở Bài giảng điện tử trên TNU rồi tải lại trang sau khi cập nhật extension."}</small></p></div>{fresh && status?.duration !== undefined && <><div className="lecture-progress"><i style={{ width: `${percent}%` }} /></div><small>{time(status.currentTime)} / {time(status.duration)}</small></>}</div>
+    <div className="panel-card form-grid">
+      <label>Tốc độ phát<select value={rate} onChange={(event) => setRate(Number(event.target.value))}>{[1, 1.5, 2, 3, 4, 6, 8].map((value) => <option key={value} value={value}>{value}×{value > 4 ? " — có thể không nghe rõ tiếng" : ""}</option>)}</select></label>
+      <Toggle label="Tự chuyển sang slide tiếp theo" value={autoNext} onChange={setAutoNext} />
+      <label>Chờ trước khi chuyển slide (giây)<input type="number" min="0" max="10" step="0.25" value={delaySeconds} onChange={(event) => setDelaySeconds(Math.max(0, Math.min(10, Number(event.target.value))))} /></label>
+      <Toggle label="Dừng khi gặp câu hỏi hoặc tương tác" value={pauseOnInteraction} onChange={setPauseOnInteraction} />
+      <small className="setting-help">Extension tăng tốc cả đồng hồ hiệu ứng của player và media, nhưng không tua thẳng tới cuối hay ghi giả trạng thái hoàn thành. Nút TIẾP chỉ được bấm sau sự kiện kết thúc thật.</small>
+      {rate > 4 && <div className="warning-card">Ở 6×–8×, Chrome có thể phát âm thanh khó nghe hoặc gần như im tiếng. Tiến trình media vẫn chạy nhanh.</div>}
+      <div className="lecture-actions"><button className="primary" disabled={busy} onClick={() => void act(async () => { setEnabled(true); await save(true); }, `Đã bật tăng tốc ${rate}×.`)}>{enabled ? "Lưu & áp dụng" : "Bật tăng tốc"}</button><button className="stop" disabled={busy || !enabled} onClick={() => void act(async () => { setEnabled(false); await save(false); }, "Đã dừng tăng tốc bài giảng.")}>Dừng ngay</button></div>
+    </div>
+    <div className="panel-card lecture-safety"><b>Nguyên tắc hoạt động</b><p>Slide không có media, media lỗi, nút TIẾP bị khóa hoặc có tương tác sẽ không bị tự bỏ qua. Ở slide cuối, gói SCORM của TNU tự quyết định trạng thái hoàn thành.</p></div>
+  </section>;
 }
 
 function Courses({ state, busy, act, setTab }: { state: AppState; busy: boolean; act: (fn: () => Promise<unknown>, success?: string) => Promise<void>; setTab: (tab: TabId) => void }) {
@@ -480,7 +514,7 @@ function SettingsPanel({ state, busy, act }: { state: AppState; busy: boolean; a
     <PriceEditor settings={settings} onChange={(prices) => set("modelPrices", prices)} />
     <Toggle label="Cho phép chuyển sang API dự phòng" value={settings.fallbackEnabled} onChange={(value) => set("fallbackEnabled", value)} />
     {settings.fallbackEnabled && <><label>Thứ tự API dự phòng<select value={settings.fallbackOrder.join(",")} onChange={(event) => set("fallbackOrder", event.target.value.split(",") as AppSettings["fallbackOrder"])}>{[["gemini_api", "openai_api", "anthropic_api"], ["gemini_api", "anthropic_api", "openai_api"], ["openai_api", "gemini_api", "anthropic_api"], ["openai_api", "anthropic_api", "gemini_api"], ["anthropic_api", "gemini_api", "openai_api"], ["anthropic_api", "openai_api", "gemini_api"]].map((order) => <option key={order.join(",")} value={order.join(",")}>{order.map((id) => PROVIDERS.find((item) => item.id === id)?.label).join(" → ")}</option>)}</select></label><label>Số provider dự phòng tối đa<input type="number" min="0" max="2" value={settings.fallbackMax} onChange={(event) => set("fallbackMax", Number(event.target.value))} /></label><small className="setting-help">Chuyển sau khi đã hết retry nếu mã lỗi xác nhận giới hạn tốc độ tạm thời hoặc quá tải. Lỗi quota ngày, tín dụng, billing, spending limit và 429 không rõ mã sẽ không retry/fallback. Model dự phòng cần còn khả dụng và có xác minh text/ảnh còn hạn; ngân sách được kiểm tra lại trước khi dispatch.</small></>}
-    <label>Khoảng nghỉ giữa câu (ms)<input type="number" min="0" max="10000" step="50" value={settings.delayMs} onChange={(event) => set("delayMs", Number(event.target.value))} /></label>
+    <label>Khoảng nghỉ giữa lần gửi AI (giây)<input type="number" min="0" max="60" step="0.05" value={settings.delayMs / 1000} onChange={(event) => set("delayMs", Math.round(Number(event.target.value) * 1000))} /></label>
     <label>Từ khóa luyện tập<textarea value={settings.practiceKeywords.join(", ")} onChange={(event) => set("practiceKeywords", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} /></label>
     <label>Từ khóa kiểm tra<textarea value={settings.gradedKeywords.join(", ")} onChange={(event) => set("gradedKeywords", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} /></label>
     <Toggle label="Tự chuyển trang" value={settings.autoNavigate} onChange={(value) => set("autoNavigate", value)} />

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const extension = path.resolve(process.env.TNU_E2E_EXTENSION || "release/v3.3.1/chrome-mv3");
+const extension = path.resolve(process.env.TNU_E2E_EXTENSION || "release/v3.4.1/chrome-mv3");
 const browserPath = process.env.TNU_E2E_BROWSER || "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const profile = await mkdtemp(path.join(tmpdir(), "tnu-web-tabs-e2e-"));
 let context;
@@ -84,7 +84,7 @@ try {
     return control?.value === "2";
   });
   const rotationInput = await rotationControl.inputValue();
-  await panel.getByLabel("Khoảng nghỉ giữa câu (ms)").fill("0");
+  await panel.getByLabel("Khoảng nghỉ giữa lần gửi AI (giây)").fill("0");
   await saveSettingsButton.click();
   await panel.getByText("Đã lưu cài đặt.").waitFor();
   const savedRotation = await panel.evaluate(async () => (await chrome.runtime.sendMessage({ type: "GET_STATE" })).data.settings.manualRotationEvery);

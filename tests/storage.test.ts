@@ -31,10 +31,12 @@ describe("persistent extension data", () => {
     await saveSettings({ ...DEFAULT_SETTINGS, model: "legacy", provider: "chatgpt_manual" });
     expect(await getApiKey()).toBe("secret");
     expect((await getState()).settings).toMatchObject({ provider: "chatgpt_manual", model: "legacy" });
-    expect(migrateSettings({ schemaVersion: 3, model: "old" })).toMatchObject({ schemaVersion: 9, model: "old", provider: "gemini_api", webTimeoutMs: 300_000 });
-    expect(migrateSettings({ schemaVersion: 4, provider: "claude_manual", model: "old", manualPrompt: "giữ prompt" })).toMatchObject({ schemaVersion: 9, provider: "claude_manual", model: "old", manualPrompt: "giữ prompt", selectionRevision: "legacy", webTimeoutMs: 300_000 });
+    expect(migrateSettings({ schemaVersion: 3, model: "old" })).toMatchObject({ schemaVersion: 10, model: "old", provider: "gemini_api", webTimeoutMs: 300_000, scormEnabled: false });
+    expect(migrateSettings({ schemaVersion: 4, provider: "claude_manual", model: "old", manualPrompt: "giữ prompt" })).toMatchObject({ schemaVersion: 10, provider: "claude_manual", model: "old", manualPrompt: "giữ prompt", selectionRevision: "legacy", webTimeoutMs: 300_000, scormPlaybackRate: 8 });
     expect(migrateSettings({ webTimeoutMs: 10_000 })).toMatchObject({ webTimeoutMs: 30_000 });
     expect(migrateSettings({ webTimeoutMs: 2_000_000 })).toMatchObject({ webTimeoutMs: 1_800_000 });
+    expect(migrateSettings({ delayMs: -1 })).toMatchObject({ delayMs: 0 });
+    expect(migrateSettings({ delayMs: 90_000 })).toMatchObject({ delayMs: 60_000 });
     expect(migrateSettings({ provider: "deepseek_web" })).toMatchObject({ provider: "deepseek_web" });
     await deleteApiKey();
     expect(await getApiKey()).toBe("");

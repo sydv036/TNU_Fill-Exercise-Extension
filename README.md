@@ -24,7 +24,7 @@ V3.2 dùng content script trên đúng tab người dùng chọn. Nó không đ�
 
 ## Sử dụng với hai cửa sổ Chrome/Edge
 
-1. Cài extension từ `release/v3.3.1/chrome-mv3` hoặc `release/v3.3.1/edge-mv3`.
+1. Cài extension từ `release/v3.4.1/chrome-mv3` hoặc `release/v3.4.1/edge-mv3`.
 2. Mở trang làm bài TNU và mở tab AI Web trong **cùng một profile trình duyệt**.
 3. Mở **Hàng đợi**, chọn tab TNU, provider Web và tab AI; bấm **Liên kết hai tab**.
 4. Bấm **Kiểm tra liên kết** để xác nhận editor, đăng nhập và conversation identity.
@@ -72,9 +72,9 @@ npm run test:release
 
 `npm run build:release` tạo thư mục riêng, không xóa `.output` và không đóng/kill Chrome/Edge. Release trước được giữ để rollback.
 
-- Chrome: `release/v3.3.1/chrome-mv3`
-- Edge: `release/v3.3.1/edge-mv3`
-- SHA-256 receipt: `release/v3.3.1/release-manifest.json`
+- Chrome: `release/v3.4.1/chrome-mv3`
+- Edge: `release/v3.4.1/edge-mv3`
+- SHA-256 receipt: `release/v3.4.1/release-manifest.json`
 
 Trong `chrome://extensions` hoặc `edge://extensions`, bật **Chế độ dành cho nhà phát triển**, bấm **Tải tiện ích đã giải nén** và chọn thư mục tương ứng.
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuestionSnapshot, QuizTarget, RuntimeMessage } from "../src/types";
 import { reserveUsage as importReserve, updateReservationStatus } from "../src/run-budget";
+import { makeMemoryEntry } from "../src/answer-memory";
 
 function area() {
   let data: Record<string, unknown> = {};
@@ -75,6 +76,14 @@ const start = () => call({ type: "START_RUN", target, mode: "from_current", memo
 const setPending = async (runId: string, executionEpoch: string, decision: import("../src/types").AnswerDecision) => call({ type: "UPDATE_RUN", runId, executionEpoch, patch: { status: "awaiting_user", currentQuestionSnapshot: question, pendingDecision: { question, decision } } }, tnu);
 
 describe("provider switching through background and storage", () => {
+  it("persists SCORM controls and restores the latest frame status", async () => {
+    await call({ type: "SCORM_CONTROL", settings: { scormEnabled: true, scormPlaybackRate: 8, scormAutoNext: true, scormNextDelayMs: 750, scormPauseOnInteraction: true } });
+    expect(await getSettings()).toMatchObject({ scormEnabled: true, scormPlaybackRate: 8, scormAutoNext: true, scormNextDelayMs: 750 });
+    const frameUrl = "https://tnu.aum.edu.vn/pluginfile.php/1/mod_scorm/content/1/res/index.html";
+    await call({ type: "SCORM_STATUS_UPDATE", status: { frameUrl, detected: true, enabled: true, state: "playing", playbackRate: 8, mediaKind: "audio", currentTime: 2, duration: 20, message: "Đang phát ở 8×.", updatedAt: new Date().toISOString() } }, { url: frameUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    const state = await call({ type: "GET_STATE" });
+    expect((state.data as import("../src/types").AppState).scormStatus).toMatchObject({ tabId: 7, state: "playing", playbackRate: 8 });
+  });
   it("keeps credentials out of TNU state and prevents TNU from changing keys", async () => {
     await setKey("openai_api", "isolated-secret");
     await expect(call({ type: "BEGIN_CREDENTIAL_CHANGE", provider: "anthropic_api" }, tnu)).rejects.toThrow("Trang TNU");
@@ -306,6 +315,27 @@ describe("provider switching through background and storage", () => {
     const result = await call({ type: "ANSWER_QUESTION", runId: run.id, executionEpoch: run.executionEpoch!, question: { ...question, prompt: "Phép cộng 2+2?" } }, tnu);
     expect(result.data).toMatchObject({ source: "openai" });
     expect(lastExternalPrompt).toContain("Phép cộng cho kết quả bốn.");
+  });
+  it("stores review answers even when the run is paused and an earlier empty capture marked the page", async () => {
+    await start();
+    const run = (await getRun())!;
+    await mutateRun((current) => current?.id === run.id ? { ...current, status: "paused" } : undefined);
+    const reviewUrl = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=11&cmid=123";
+    await session.set({ reviewCaptures: { [reviewUrl]: true } });
+    const entry = makeMemoryEntry(target, question, ["4"], reviewUrl);
+    const result = await call({ type: "SAVE_REVIEW_ANSWERS", runId: run.id, executionEpoch: run.executionEpoch!, target, entries: [entry], sourceUrl: reviewUrl, reviewComplete: true }, { url: reviewUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    const { getAnswerMemory } = await import("../src/storage");
+    expect(result.data).toMatchObject({ saved: 1 });
+    expect(await getAnswerMemory()).toHaveLength(1);
+    expect((await getRun())?.message).toContain("Đã lưu 1 đáp án đúng");
+  });
+  it("stores review answers when no active run survives the review page", async () => {
+    const reviewUrl = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=12&cmid=123";
+    const entry = makeMemoryEntry(target, question, ["4"], reviewUrl);
+    const result = await call({ type: "SAVE_REVIEW_ANSWERS", target, entries: [entry], sourceUrl: reviewUrl, reviewComplete: true }, { url: reviewUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    const { getAnswerMemory } = await import("../src/storage");
+    expect(result.data).toMatchObject({ saved: 1, total: 1 });
+    expect(await getAnswerMemory()).toHaveLength(1);
   });
   it("rejects a late OpenAI response after stop and switch to Claude", async () => {
     for (const provider of ["openai_api", "anthropic_api"] as const) {

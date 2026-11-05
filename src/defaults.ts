@@ -1,7 +1,7 @@
 import type { AppSettings } from "./types";
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  schemaVersion: 9,
+  schemaVersion: 10,
   provider: "gemini_api",
   selectionRevision: "legacy",
   manualPrompt: "Phân tích câu hỏi và chọn đáp án đúng. Sử dụng tài liệu tham khảo nếu phù hợp, nêu lý do ngắn gọn.",
@@ -35,5 +35,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   volume: 0.65,
   autoNavigate: true,
   showReason: true,
-  useCourseKnowledgeForAnswers: false
+  useCourseKnowledgeForAnswers: false,
+  scormEnabled: false,
+  scormPlaybackRate: 8,
+  scormAutoNext: true,
+  scormNextDelayMs: 750,
+  scormPauseOnInteraction: true
 };

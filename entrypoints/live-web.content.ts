@@ -12,7 +12,7 @@ interface PreparedLiveRequest {
   stopClicked: boolean;
 }
 
-const LIVE_BRIDGE_VERSION = "3.3.1";
+const LIVE_BRIDGE_VERSION = "3.4.1";
 
 const providerId = providerForWebUrl(location.href);
 let conversationIdentity = `live-conversation-${crypto.randomUUID()}`;

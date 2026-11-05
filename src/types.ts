@@ -273,7 +273,7 @@ export interface ModelCapability {
 }
 
 export interface AppSettings {
-  schemaVersion: 9;
+  schemaVersion: 10;
   provider: ProviderId;
   selectionRevision: string;
   manualPrompt: string;
@@ -308,6 +308,25 @@ export interface AppSettings {
   autoNavigate: boolean;
   showReason: boolean;
   useCourseKnowledgeForAnswers: boolean;
+  scormEnabled: boolean;
+  scormPlaybackRate: number;
+  scormAutoNext: boolean;
+  scormNextDelayMs: number;
+  scormPauseOnInteraction: boolean;
+}
+
+export interface ScormStatus {
+  tabId: number;
+  frameUrl: string;
+  detected: boolean;
+  enabled: boolean;
+  state: "idle" | "playing" | "paused" | "waiting" | "waiting_next" | "interaction" | "completed" | "error";
+  playbackRate: number;
+  mediaKind?: "audio" | "video";
+  currentTime?: number;
+  duration?: number;
+  message: string;
+  updatedAt: string;
 }
 
 export interface GeminiModel {
@@ -331,6 +350,7 @@ export interface AppState {
   storageBytes: number;
   browserTabs?: BrowserTabSummary[];
   webTabBinding?: WebTabBinding;
+  scormStatus?: ScormStatus;
 }
 
 export interface BrowserTabSummary {
@@ -398,7 +418,7 @@ export type RuntimeMessage =
   | { type: "CONFIRM_VERIFICATION"; choice: "primary" | "verifier" }
   | { type: "SHOW_VERIFICATION"; questionId: string; selectedOptionIds: string[]; executionEpoch?: string }
   | { type: "ANSWER_QUESTION"; runId: string; executionEpoch: string; question: QuestionSnapshot }
-  | { type: "SAVE_REVIEW_ANSWERS"; runId: string; executionEpoch: string; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
+  | { type: "SAVE_REVIEW_ANSWERS"; runId?: string; executionEpoch?: string; target: QuizTarget; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
   | { type: "CLEAR_ANSWER_MEMORY" }
   | { type: "CLEAR_ALL_DATA" }
   | { type: "INDEX_COURSE_MATERIALS"; courseId: string }
@@ -407,6 +427,9 @@ export type RuntimeMessage =
   | { type: "CLEAR_KNOWLEDGE_INDEX"; courseId: string }
   | { type: "UPDATE_RUN"; runId: string; executionEpoch?: string; patch: Partial<RunSession> }
   | { type: "NOTIFY"; title: string; message: string; level?: LogEntry["level"] }
+  | { type: "SCORM_STATUS_UPDATE"; status: Omit<ScormStatus, "tabId"> }
+  | { type: "SCORM_CONTROL"; settings: Pick<AppSettings, "scormEnabled" | "scormPlaybackRate" | "scormAutoNext" | "scormNextDelayMs" | "scormPauseOnInteraction"> }
+  | { type: "SCORM_APPLY_SETTINGS"; settings: Pick<AppSettings, "scormEnabled" | "scormPlaybackRate" | "scormAutoNext" | "scormNextDelayMs" | "scormPauseOnInteraction"> }
   | { type: "CONTENT_READY"; url: string };
 
 export interface RuntimeResponse<T = unknown> {

@@ -9,7 +9,7 @@ export default defineConfig({
   manifest: {
     name: "TNU Fill Exercise Assistant",
     description: "Hỗ trợ luyện tập Moodle TNU với Gemini API và tab Gemini, ChatGPT, Claude hoặc DeepSeek Web; luôn dừng trước bước nộp bài.",
-    version: "3.3.1",
+    version: "3.4.4",
     minimum_chrome_version: "114",
     permissions: ["storage", "tabs", "sidePanel", "notifications"],
     host_permissions: [

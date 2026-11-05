@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findMemoryDecision, makeMemoryEntry, mergeAnswerMemory, selectedMemoryEvidence } from "../src/answer-memory";
-import { extractReviewAnswerEntries } from "../src/moodle";
+import { extractReviewAnswerEntries, parseReviewTarget } from "../src/moodle";
 import type { QuestionSnapshot, QuizTarget } from "../src/types";
 
 const target: QuizTarget = {
@@ -14,6 +14,18 @@ function doc(html: string): Document {
 }
 
 describe("answer memory", () => {
+  it("reconstructs a cache target from a standalone Moodle review page", () => {
+    const document = doc(`<nav class="breadcrumb"><a href="/course/index.php?categoryid=7">Ngành chung</a><a href="/course/view.php?id=11086">Phát triển kỹ năng cá nhân - 260920</a><a href="/course/view.php?id=11086#section-7">Tuần 7: Bài 6</a><a href="/mod/quiz/view.php?id=500435">Bài luyện tập 6</a></nav>`);
+    expect(parseReviewTarget(document, "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=1&cmid=500435")).toMatchObject({
+      id: "11086:500435", courseId: "11086", name: "Bài luyện tập 6", week: "Tuần 7: Bài 6", assessmentKind: "practice"
+    });
+  });
+  it("prefers the review breadcrumb course over an unrelated navigation drawer course", () => {
+    const document = doc(`<aside><a href="/course/view.php?id=11086">Khóa gần đây nhưng không liên quan</a></aside><nav class="breadcrumb"><a href="/course/index.php?categoryid=7">Ngành chung</a><a href="/course/view.php?id=11085">Nhập môn Internet và E-Learning - 260920</a><a href="/course/view.php?id=11085#section-6">Tuần 6</a><a href="/mod/quiz/view.php?id=500399">Bài luyện tập 4</a></nav>`);
+    expect(parseReviewTarget(document, "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=1&cmid=500399")).toMatchObject({
+      id: "11085:500399", courseId: "11085", courseName: "Nhập môn Internet và E-Learning - 260920", week: "Tuần 6", name: "Bài luyện tập 4"
+    });
+  });
   it("does not reuse legacy cache for images or a different question type", () => {
     const question: QuestionSnapshot = { id: "q", number: "1", type: "single", prompt: "2 + 2?", images: [], options: [{ id: "option_0", label: "4", selected: false }] };
     const entry = makeMemoryEntry(target, question, ["4"], "review");
@@ -33,6 +45,13 @@ describe("answer memory", () => {
     const entries = extractReviewAnswerEntries(document, target, "https://tnu.aum.edu.vn/mod/quiz/review.php?cmid=500414");
     expect(entries).toHaveLength(1);
     expect(entries[0]!.correctOptionLabels).toEqual(["thiet lap muc tieu"]);
+  });
+
+  it("does not discard answers inside Moodle's question flag save form", () => {
+    const document = doc(`<form class="questionflagsaveform"><div class="que multichoice deferredfeedback correct" id="question-1"><div class="info"><input class="questionflag" name="q1:flag" type="checkbox"></div><div class="qtext">Kỹ thuật Janusian dùng để làm gì?</div><div class="answer"><div class="r0"><input id="q1_answer0" name="q1_answer" type="radio"><div>A. Phương án sai</div></div><div class="r1 correct"><input id="q1_answer1" name="q1_answer" type="radio" checked><div>B. Xem xét khía cạnh đối diện</div></div></div><div class="rightanswer">Câu trả lời đúng là: Xem xét khía cạnh đối diện</div></div></form>`);
+    const entries = extractReviewAnswerEntries(document, target, "https://tnu.aum.edu.vn/mod/quiz/review.php?cmid=500414");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.correctOptionLabels).toEqual(["xem xet khia canh đoi dien"]);
   });
 
   it("learns selected answers when the review state says Đúng", () => {

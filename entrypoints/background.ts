@@ -22,7 +22,7 @@ import { FixtureTabWebAdapter } from "../src/web-fixture-adapter";
 import { LiveTabWebAdapter } from "../src/live-web-adapter";
 import {
   appendLog, clearAllData, clearAnswerMemory, clearCredentialChangeLease, clearKnowledgeIndex, clearProviderCapabilities, clearWebTabBinding, getAnswerMemory, getApiKey, getCredentialChangeLease, getKnowledgeIndex, getRun, getSettings, getState, getWebTabBinding,
-  markReviewCaptured, mutateRun, saveAnswerMemory, saveCourseIndex, saveCredentialChangeLease, saveKnowledgeIndex, saveQueue, saveRun, saveSettings, saveWebTabBinding, secureLocalStorage, updateRun, wasReviewCaptured, getProviderKey, getModelCapabilities, recordModelCapability, supportsVerifiedTask
+  markReviewCaptured, mutateRun, saveAnswerMemory, saveCourseIndex, saveCredentialChangeLease, saveKnowledgeIndex, saveQueue, saveRun, saveSettings, saveWebTabBinding, secureLocalStorage, updateRun, wasReviewCaptured, getProviderKey, getModelCapabilities, recordModelCapability, supportsVerifiedTask, saveScormStatus
 } from "../src/storage";
 import type { ApiProviderId, AppSettings, CourseIndex, KnowledgeChunk, KnowledgeExtractionResult, KnowledgeIndex, KnowledgeSearchResponse, QuestionSnapshot, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
 
@@ -36,13 +36,13 @@ function isExtensionPage(sender: Browser.runtime.MessageSender): boolean {
   return sender.id === browser.runtime.id && typeof sender.url === "string" && sender.url.startsWith(extensionRoot);
 }
 
-const CONTENT_MESSAGE_TYPES = new Set<RuntimeMessage["type"]>(["GET_STATE", "ANSWER_QUESTION", "UPDATE_RUN", "SAVE_REVIEW_ANSWERS", "NOTIFY", "CONTENT_READY"]);
+const CONTENT_MESSAGE_TYPES = new Set<RuntimeMessage["type"]>(["GET_STATE", "ANSWER_QUESTION", "UPDATE_RUN", "SAVE_REVIEW_ANSWERS", "NOTIFY", "CONTENT_READY", "SCORM_STATUS_UPDATE"]);
 const EXTENSION_ONLY_TYPES = new Set<RuntimeMessage["type"]>([
   "SAVE_SETTINGS", "SWITCH_PROVIDER", "SELECT_GEMINI_MODEL", "BEGIN_CREDENTIAL_CHANGE", "COMPLETE_CREDENTIAL_CHANGE", "CANCEL_CREDENTIAL_CHANGE",
   "LIST_PROVIDER_MODELS", "SELECT_PROVIDER_MODEL", "TEST_API_CAPABILITY", "LIST_MODELS", "VALIDATE_API_KEY", "SCAN_COURSES", "SAVE_QUEUE",
   "START_RUN", "STOP_RUN", "RESUME_RUN", "RETRY_QUESTION", "SKIP_QUESTION", "APPLY_SUGGESTION", "VERIFY_QUESTION", "MANUAL_NEW_CHAT", "RESOLVE_UNKNOWN_WEB", "CREATE_WEB_CONVERSATION",
   "CLEAR_REQUEST_CHECKPOINT", "RESOLVE_UNKNOWN_USAGE", "CONFIRM_VERIFICATION", "CLEAR_ANSWER_MEMORY", "CLEAR_ALL_DATA", "INDEX_COURSE_MATERIALS", "EXTRACT_COURSE_MATERIALS", "SEARCH_KNOWLEDGE", "CLEAR_KNOWLEDGE_INDEX",
-  "LIST_WEB_TABS", "BIND_WEB_TABS", "CLEAR_WEB_TAB_BINDING", "CHECK_WEB_TAB_BINDING"
+  "LIST_WEB_TABS", "BIND_WEB_TABS", "CLEAR_WEB_TAB_BINDING", "CHECK_WEB_TAB_BINDING", "SCORM_CONTROL"
 ]);
 
 function assertLiveWebAutomationAllowed(provider: AppSettings["provider"], fixture = false): void {
@@ -528,7 +528,7 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
   if (await getCredentialChangeLease() && ["SWITCH_PROVIDER", "SELECT_GEMINI_MODEL", "LIST_PROVIDER_MODELS", "SELECT_PROVIDER_MODEL", "TEST_API_CAPABILITY", "LIST_MODELS", "VALIDATE_API_KEY", "START_RUN", "RESUME_RUN"].includes(message.type)) {
     throw new Error("Đang thay API key; hãy hoàn tất thao tác đó trước khi gọi hoặc kiểm tra API.");
   }
-  if (fromTnuContent && ["ANSWER_QUESTION", "UPDATE_RUN", "SAVE_REVIEW_ANSWERS"].includes(message.type)) {
+  if (fromTnuContent && ["ANSWER_QUESTION", "UPDATE_RUN"].includes(message.type)) {
     const run = await getRun();
     if (!run?.tnuTabId || sender.tab?.id !== run.tnuTabId) {
       throw new Error("Thông điệp không đến từ tab TNU của phiên hiện tại.");
@@ -581,6 +581,27 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
       if (!canChangeSelection(await getRun())) throw new Error("Hãy dừng phiên trước khi xóa binding tab.");
       await clearWebTabBinding();
       return { ok: true };
+    case "SCORM_STATUS_UPDATE": {
+      if (!sender.tab?.id || !sender.url || (!sender.url.includes("/mod/scorm/loadSCO.php") && !sender.url.includes("/mod_scorm/content/"))) throw new Error("Trạng thái không đến từ frame SCORM hợp lệ.");
+      await saveScormStatus({ ...message.status, tabId: sender.tab.id });
+      return { ok: true };
+    }
+    case "SCORM_CONTROL": {
+      const current = await getSettings();
+      const rates = [1, 1.5, 2, 3, 4, 6, 8];
+      const scorm = {
+        scormEnabled: message.settings.scormEnabled === true,
+        scormPlaybackRate: rates.includes(message.settings.scormPlaybackRate) ? message.settings.scormPlaybackRate : 1,
+        scormAutoNext: message.settings.scormAutoNext !== false,
+        scormNextDelayMs: Number.isFinite(message.settings.scormNextDelayMs) ? Math.max(0, Math.min(10_000, message.settings.scormNextDelayMs)) : 750,
+        scormPauseOnInteraction: message.settings.scormPauseOnInteraction !== false
+      };
+      await saveSettings({ ...current, ...scorm });
+      const tabs = await browser.tabs.query({ url: "https://tnu.aum.edu.vn/mod/scorm/player.php*" });
+      await Promise.all(tabs.flatMap((tab) => tab.id === undefined ? [] : [browser.tabs.sendMessage(tab.id, { type: "SCORM_APPLY_SETTINGS", settings: scorm } satisfies RuntimeMessage).catch(() => undefined)]));
+      await appendLog(scorm.scormEnabled ? "success" : "info", scorm.scormEnabled ? `Đã bật tăng tốc bài giảng ${scorm.scormPlaybackRate}×${scorm.scormAutoNext ? " và tự chuyển slide" : ""}.` : "Đã tắt tăng tốc bài giảng điện tử.");
+      return { ok: true, data: scorm };
+    }
     case "SAVE_SETTINGS": {
       const selected = await getSettings();
       await saveSettings({ ...message.settings, provider: selected.provider, model: selected.model, customModel: selected.customModel, openaiModel: selected.openaiModel, anthropicModel: selected.anthropicModel, selectionRevision: selected.selectionRevision });
@@ -1210,15 +1231,19 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
     }
     case "SAVE_REVIEW_ANSWERS": {
       const run = await getRun();
-      if (!run || run.id !== message.runId || run.executionEpoch !== message.executionEpoch || !sender.url || !isReviewForTarget(sender.url, run.target.url)) throw new Error("Trang xem lại không thuộc phiên hiện tại; không lưu cache.");
-      const sourceUrl = message.sourceUrl || message.entries[0]?.sourceUrl;
+      if (!sender.url || !isReviewForTarget(sender.url, message.target.url)) throw new Error("Trang xem lại không khớp bài học; không lưu cache.");
+      const expectedQuizKey = quizKey(message.target);
+      if (message.entries.some((entry) => entry.quizKey !== expectedQuizKey || entry.courseId !== message.target.courseId)) throw new Error("Dữ liệu cache không khớp bài đang xem lại.");
+      const matchingRun = run && run.id === message.runId && run.executionEpoch === message.executionEpoch && isReviewForTarget(sender.url, run.target.url) ? run : undefined;
+      const sourceUrl = sender.url;
       const alreadyCaptured = Boolean(sourceUrl && await wasReviewCaptured(sourceUrl));
-      const shouldSave = message.entries.length > 0 && !alreadyCaptured;
+      // Memory merge is idempotent. Retry every non-empty review payload so a
+      // premature zero-result capture cannot permanently block this page.
+      const shouldSave = message.entries.length > 0;
       const total = shouldSave ? await saveAnswerMemory(message.entries) : (await getAnswerMemory()).length;
-      if (sourceUrl && !alreadyCaptured) await markReviewCaptured(sourceUrl);
+      if (sourceUrl && shouldSave && !alreadyCaptured) await markReviewCaptured(sourceUrl);
       if (shouldSave) await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
       else if (!message.entries.length && !alreadyCaptured) await appendLog("warning", "Trang xem lại hiện tại không có đáp án đúng có thể lưu.");
-      const matchingRun = run?.id === message.runId ? run : undefined;
       let nextTarget;
       let batchCompleted = false;
       const batchStep = matchingRun ? practiceBatchReviewStep(matchingRun, message.reviewComplete) : undefined;
@@ -1238,6 +1263,10 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
           batchCompleted = batchStep.batchCompleted;
           await updateRun({ status: "completed", message: `Đã hoàn tất chuỗi ${matchingRun.practiceBatch.targets.length} bài luyện tập và lưu các đáp án đúng đọc được.` });
         }
+      } else if (matchingRun) {
+        await updateRun({ message: shouldSave
+          ? `Đã lưu ${message.entries.length} đáp án đúng từ trang xem lại vào cache.`
+          : "Chưa đọc được đáp án đúng trên trang xem lại; extension sẽ thử lại khi trang được tải lại." });
       }
       return { ok: true, data: { saved: shouldSave ? message.entries.length : 0, total, nextTarget, batchCompleted } };
     }
