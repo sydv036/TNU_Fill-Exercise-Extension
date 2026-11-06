@@ -337,6 +337,70 @@ describe("provider switching through background and storage", () => {
     expect(result.data).toMatchObject({ saved: 1, total: 1 });
     expect(await getAnswerMemory()).toHaveLength(1);
   });
+  it("loops a full-score practice through review cache and stops at the maximum score", async () => {
+    await call({ type: "SAVE_SETTINGS", settings: { ...await getSettings(), practiceFullScoreEnabled: true, practiceAutoSubmit: true, practiceMaxAttempts: 3, webAutoRetryCount: 2 } });
+    await start();
+    const first = (await getRun())!;
+    expect(first.practiceAutomation).toMatchObject({ enabled: true, autoSubmit: true, attemptNumber: 1, maxAttempts: 3, webRetryCount: 2 });
+    const reviewUrl = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=21&cmid=123";
+    const entry = makeMemoryEntry(target, question, ["4"], reviewUrl);
+    const retry = await call({ type: "SAVE_REVIEW_ANSWERS", runId: first.id, executionEpoch: first.executionEpoch!, target, entries: [entry], sourceUrl: reviewUrl, reviewComplete: true, score: { earned: 9, maximum: 10, full: false, label: "9/10" } }, { url: reviewUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(retry.data).toMatchObject({ retryingPractice: true, nextTarget: target, navigationEpoch: expect.any(String) });
+    const second = (await getRun())!;
+    expect(second).toMatchObject({ status: "preparing", practiceAutomation: { attemptNumber: 2, scoreHistory: [{ full: false }] } });
+    expect(second.executionEpoch).not.toBe(first.executionEpoch);
+    expect(second.memorySourceQuizKeys.length).toBeGreaterThan(0);
+    await call({ type: "SAVE_REVIEW_ANSWERS", runId: second.id, executionEpoch: second.executionEpoch!, target, entries: [entry], sourceUrl: reviewUrl, reviewComplete: true, score: { earned: 9, maximum: 10, full: false, label: "9/10" } }, { url: reviewUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(await getRun()).toMatchObject({ practiceAutomation: { attemptNumber: 2, scoreHistory: [{ full: false }] } });
+    await call({ type: "SAVE_REVIEW_ANSWERS", runId: second.id, executionEpoch: second.executionEpoch!, target, entries: [entry], sourceUrl: `${reviewUrl}&page=1`, reviewComplete: true, score: { earned: 10, maximum: 10, full: true, label: "10/10" } }, { url: `${reviewUrl}&page=1`, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(await getRun()).toMatchObject({ status: "completed", practiceAutomation: { attemptNumber: 2, scoreHistory: [{ full: false }, { full: true }] } });
+  });
+  it("applies saved full-score and auto-submit settings to an active practice run", async () => {
+    await start();
+    expect((await getRun())?.practiceAutomation).toBeUndefined();
+    await call({ type: "SAVE_SETTINGS", settings: { ...await getSettings(), practiceFullScoreEnabled: true, practiceAutoSubmit: true, practiceMaxAttempts: 7, webAutoRetryCount: 3 } });
+    expect(await getRun()).toMatchObject({
+      practiceAutomation: { enabled: true, autoSubmit: true, attemptNumber: 1, maxAttempts: 7, webRetryCount: 3, submitPhase: "idle" },
+      settingsSnapshot: { practiceFullScoreEnabled: true, practiceAutoSubmit: true, practiceMaxAttempts: 7, webAutoRetryCount: 3 }
+    });
+  });
+  it("enables full-score auto-submit for a multi-practice batch", async () => {
+    const secondTarget = { ...target, id: "1:124", url: "https://tnu.aum.edu.vn/mod/quiz/view.php?id=124", name: "Bài 2" };
+    await call({ type: "SAVE_SETTINGS", settings: { ...await getSettings(), practiceFullScoreEnabled: true, practiceAutoSubmit: true, practiceMaxAttempts: 4, webAutoRetryCount: 2 } });
+    await call({ type: "START_RUN", target, mode: "from_start", memorySourceQuizKeys: [], reviewEveryAnswer: false, knowledgeMaterialIds: [], batchTargets: [target, secondTarget], tnuTabId: 7 });
+    const firstRun = (await getRun())!;
+    expect(firstRun).toMatchObject({
+      practiceBatch: { currentIndex: 0, targets: [target, secondTarget] },
+      practiceAutomation: { enabled: true, autoSubmit: true, attemptNumber: 1, maxAttempts: 4, webRetryCount: 2, submitPhase: "idle" }
+    });
+    const firstReview = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=31&cmid=123";
+    const firstEntry = makeMemoryEntry(target, question, ["4"], firstReview);
+    const moved = await call({ type: "SAVE_REVIEW_ANSWERS", runId: firstRun.id, executionEpoch: firstRun.executionEpoch!, target, entries: [firstEntry], sourceUrl: firstReview, reviewComplete: true, score: { earned: 10, maximum: 10, full: true, label: "10/10" } }, { url: firstReview, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(moved.data).toMatchObject({ nextTarget: secondTarget, navigationEpoch: expect.any(String) });
+    const secondRun = (await getRun())!;
+    expect(secondRun).toMatchObject({ target: secondTarget, status: "preparing", practiceBatch: { currentIndex: 1 }, practiceAutomation: { attemptNumber: 1, scoreHistory: [] } });
+    const secondReview = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=32&cmid=124";
+    const secondEntry = makeMemoryEntry(secondTarget, question, ["4"], secondReview);
+    await call({ type: "SAVE_REVIEW_ANSWERS", runId: secondRun.id, executionEpoch: secondRun.executionEpoch!, target: secondTarget, entries: [secondEntry], sourceUrl: secondReview, reviewComplete: true, score: { earned: 10, maximum: 10, full: true, label: "10/10" } }, { url: secondReview, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(await getRun()).toMatchObject({ status: "completed", target: secondTarget, practiceBatch: { currentIndex: 1 }, practiceAutomation: { scoreHistory: [{ full: true }] } });
+  });
+  it("pauses instead of blindly retrying when a non-perfect review exposes no correct answers", async () => {
+    await call({ type: "SAVE_SETTINGS", settings: { ...await getSettings(), practiceFullScoreEnabled: true, practiceAutoSubmit: true, practiceMaxAttempts: 3 } });
+    await start();
+    const run = (await getRun())!;
+    const reviewUrl = "https://tnu.aum.edu.vn/mod/quiz/review.php?attempt=22&cmid=123";
+    await call({ type: "SAVE_REVIEW_ANSWERS", runId: run.id, executionEpoch: run.executionEpoch!, target, entries: [], sourceUrl: reviewUrl, reviewComplete: true, score: { earned: 8, maximum: 10, full: false, label: "8/10" } }, { url: reviewUrl, tab: { id: 7 } } as Browser.runtime.MessageSender);
+    expect(await getRun()).toMatchObject({ status: "paused", practiceAutomation: { attemptNumber: 1, scoreHistory: [] } });
+    expect((await getRun())?.message).toContain("Không đọc được điểm");
+  });
+  it("never allows the practice submit command for a graded target", async () => {
+    await call({ type: "SAVE_SETTINGS", settings: { ...await getSettings(), practiceFullScoreEnabled: true, practiceAutoSubmit: true } });
+    await start();
+    const run = (await getRun())!;
+    await mutateRun((current) => current?.id === run.id ? { ...current, status: "awaiting_user", target: { ...current.target, assessmentKind: "graded" }, practiceAutomation: current.practiceAutomation && { ...current.practiceAutomation, submitPhase: "ready" } } : undefined);
+    await expect(call({ type: "SUBMIT_PRACTICE", executionEpoch: run.executionEpoch })).rejects.toThrow("không ở trạng thái");
+    expect((browser.tabs.sendMessage as ReturnType<typeof vi.fn>)).not.toHaveBeenCalledWith(7, expect.objectContaining({ type: "SUBMIT_PRACTICE" }));
+  });
   it("rejects a late OpenAI response after stop and switch to Claude", async () => {
     for (const provider of ["openai_api", "anthropic_api"] as const) {
       await setKey(provider, "fixture-key");

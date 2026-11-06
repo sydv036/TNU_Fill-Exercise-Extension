@@ -9,9 +9,13 @@ describe("submission safety", () => {
   const backgroundSource = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
   const typesSource = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
-  it("does not target Moodle final-submit controls", () => {
-    expect(contentSource).not.toMatch(/querySelector[^\n]*submitall/i);
-    expect(contentSource).not.toMatch(/\.click\(\)[^\n]*submitall/i);
+  it("targets only Moodle final-submit controls and guards them to full-score practice runs", () => {
+    expect(contentSource).toContain('button[name="submitall"], input[name="submitall"]');
+    expect(contentSource).toContain('form#frm-finishattempt, form[action*="/mod/quiz/processattempt.php"]');
+    expect(contentSource).toContain('input[name="finishattempt"]');
+    expect(contentSource).toContain("nộp bài và kết thúc|submit all and finish");
+    expect(contentSource).toContain('run.target.assessmentKind !== "practice" || !run.practiceAutomation?.enabled');
+    expect(backgroundSource).toContain('run.target.assessmentKind !== "practice" || run.practiceAutomation?.submitPhase !== "ready"');
     expect(contentSource).not.toContain("document.querySelector<HTMLElement>('button[type=\"submit\"], input[type=\"submit\"]')");
   });
 
@@ -59,5 +63,17 @@ describe("submission safety", () => {
     expect(storageSource).not.toContain("storage.sync");
     expect(backgroundSource).not.toContain("console.log");
     expect(backgroundSource).not.toContain("apiKey: message.apiKey");
+  });
+
+  it("reconciles an uncertain AI Web response before a bounded retry", () => {
+    expect(backgroundSource).toContain("run.practiceAutomation?.enabled ? run.practiceAutomation.webRetryCount : 0");
+    expect(backgroundSource).toContain("recoverResponse?.(request, 15_000)");
+    expect(backgroundSource).toContain("createVerifiedConversation");
+    expect(backgroundSource).toContain("webRetry >= maxWebRetries");
+  });
+
+  it("recovers full-score automation for an active practice batch after upgrade", () => {
+    expect(contentSource).toContain("Đã khôi phục chế độ tự động đạt điểm tối đa cho chuỗi luyện tập.");
+    expect(backgroundSource).not.toContain("!message.dryRunLimit && !isPracticeBatch");
   });
 });

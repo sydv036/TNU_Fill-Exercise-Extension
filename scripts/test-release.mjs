@@ -103,6 +103,7 @@ for (const browserId of ["chrome", "edge"]) {
   run("scripts/e2e-live-web-bridge.mjs", env, `${browserId} artifact · Gemini/ChatGPT/Claude live content bridge DOM compatibility`);
   run("scripts/e2e-scorm.mjs", env, `${browserId} artifact · SCORM 8× / auto-next / interaction stop`);
   run("scripts/e2e-auto.mjs", env, `${browserId} artifact · API fixture / fallback / budget / error regression`);
+  run("scripts/e2e-full-score.mjs", env, `${browserId} artifact · practice auto-submit / review cache / retry-until-full-score`);
   run("scripts/e2e-ui-release.mjs", env, `${browserId} artifact · sidepanel / provider / model / capability / unknown usage UI`);
 }
 

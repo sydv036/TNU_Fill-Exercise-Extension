@@ -65,6 +65,10 @@ export class FixtureTabWebAdapter implements WebAIAdapter {
     finally { signal.removeEventListener("abort", cancel); }
   }
 
+  async recoverResponse(request: AIRequest, timeoutMs: number): Promise<AIResponse | undefined> {
+    return this.send<AIResponse | undefined>({ type: "WEB_FIXTURE_RECOVER", request, timeoutMs }).catch(() => undefined);
+  }
+
   async createConversation(): Promise<void> {
     await this.send({ type: "WEB_FIXTURE_NEW_CONVERSATION" });
   }

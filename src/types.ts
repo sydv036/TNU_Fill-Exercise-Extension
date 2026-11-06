@@ -88,6 +88,24 @@ export interface AnswerMemorySource {
   learnedAt: string;
 }
 
+export interface QuizScore {
+  earned: number;
+  maximum: number;
+  full: boolean;
+  label: string;
+}
+
+export interface PracticeAutomationState {
+  enabled: true;
+  autoSubmit: boolean;
+  collectCacheWhenFull: boolean;
+  maxAttempts: number;
+  attemptNumber: number;
+  webRetryCount: number;
+  scoreHistory: QuizScore[];
+  submitPhase: "idle" | "ready" | "submitting" | "submitted" | "reviewing";
+}
+
 export interface QuizTarget {
   id: string;
   url: string;
@@ -235,6 +253,7 @@ export interface RunSession {
   reviewEveryAnswer: boolean;
   knowledgeMaterialIds: string[];
   practiceBatch?: { targets: QuizTarget[]; currentIndex: number };
+  practiceAutomation?: PracticeAutomationState;
   pendingDecision?: PendingDecision;
   currentQuestionSnapshot?: QuestionSnapshot;
   message: string;
@@ -273,7 +292,7 @@ export interface ModelCapability {
 }
 
 export interface AppSettings {
-  schemaVersion: 10;
+  schemaVersion: 12;
   provider: ProviderId;
   selectionRevision: string;
   manualPrompt: string;
@@ -300,6 +319,11 @@ export interface AppSettings {
   fallbackOrder: ApiProviderId[];
   fallbackMax: number;
   delayMs: number;
+  practiceFullScoreEnabled: boolean;
+  practiceAutoSubmit: boolean;
+  practiceCollectCacheWhenFull: boolean;
+  practiceMaxAttempts: number;
+  webAutoRetryCount: number;
   practiceKeywords: string[];
   gradedKeywords: string[];
   notificationsEnabled: boolean;
@@ -407,6 +431,7 @@ export type RuntimeMessage =
   | { type: "RETRY_QUESTION" }
   | { type: "SKIP_QUESTION"; executionEpoch?: string }
   | { type: "APPLY_SUGGESTION"; executionEpoch?: string }
+  | { type: "SUBMIT_PRACTICE"; executionEpoch?: string }
   | { type: "VERIFY_QUESTION" }
   | { type: "SUBMIT_MANUAL_RESPONSE"; runId: string; questionId: string; requestId: string; response: string; imagesAttached: boolean; newChatConfirmed: boolean }
   | { type: "MANUAL_NEW_CHAT"; runId: string }
@@ -418,7 +443,7 @@ export type RuntimeMessage =
   | { type: "CONFIRM_VERIFICATION"; choice: "primary" | "verifier" }
   | { type: "SHOW_VERIFICATION"; questionId: string; selectedOptionIds: string[]; executionEpoch?: string }
   | { type: "ANSWER_QUESTION"; runId: string; executionEpoch: string; question: QuestionSnapshot }
-  | { type: "SAVE_REVIEW_ANSWERS"; runId?: string; executionEpoch?: string; target: QuizTarget; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean }
+  | { type: "SAVE_REVIEW_ANSWERS"; runId?: string; executionEpoch?: string; target: QuizTarget; entries: AnswerMemoryEntry[]; sourceUrl: string; reviewComplete: boolean; score?: QuizScore }
   | { type: "CLEAR_ANSWER_MEMORY" }
   | { type: "CLEAR_ALL_DATA" }
   | { type: "INDEX_COURSE_MATERIALS"; courseId: string }

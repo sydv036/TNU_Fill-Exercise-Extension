@@ -2,7 +2,7 @@ import type { AIRequest, AIResponse, ProviderStatus } from "../src/web-adapter";
 import { findCorrelatedLiveResponse, findLiveEditor, findLiveFileInput, findLiveSendButton, findLiveStopButton, findNewChatControl, isLiveGenerating, liveAssistantMessages, liveResponseText, liveUserMessageCount } from "../src/live-web-dom";
 import { isBlankWebConversation, providerForWebUrl } from "../src/web-tabs";
 
-interface LiveMessage { type: string; request?: AIRequest; requestId?: string; }
+interface LiveMessage { type: string; request?: AIRequest; requestId?: string; timeoutMs?: number; }
 interface PreparedLiveRequest {
   request: AIRequest;
   baselineResponses: Set<HTMLElement>;
@@ -199,6 +199,25 @@ async function waitForResponse(requestId: string): Promise<AIResponse> {
   throw new Error(`Hết ${Math.round(timeoutMs / 1000)} giây chờ AI Web hoàn tất; không tự gửi lại request.`);
 }
 
+async function recoverResponse(request: AIRequest, timeoutMs = 15_000): Promise<AIResponse | undefined> {
+  if (!providerId || request.providerId !== providerId) return undefined;
+  const started = Date.now();
+  while (Date.now() - started < Math.max(0, Math.min(timeoutMs, 30_000))) {
+    syncConversationIdentity();
+    const correlated = findCorrelatedLiveResponse(providerId, request.requestId, request.questionId);
+    if (correlated?.element && correlated.content && !isLiveGenerating(providerId, correlated.element)) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const settled = findCorrelatedLiveResponse(providerId, request.requestId, request.questionId);
+      if (settled?.content === correlated.content && !isLiveGenerating(providerId, settled.element)) {
+        latestResponseIdentity = responseIdentity(settled.element);
+        return { requestId: request.requestId, executionEpoch: request.executionEpoch, questionId: request.questionId, conversationIdentity: request.conversationIdentity, responseIdentity: latestResponseIdentity, role: "assistant", complete: true, content: settled.content };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return undefined;
+}
+
 async function createConversation(): Promise<void> {
   if (!providerId) throw new Error("Provider AI Web không hợp lệ.");
   if (prepared?.submitted) throw new Error("Không thể tạo chat mới khi request cũ chưa được cleanup.");
@@ -239,6 +258,7 @@ export default defineContentScript({
       if (message.type === "WEB_LIVE_PREPARE" && message.request) return respond(() => prepareRequest(message.request!));
       if (message.type === "WEB_LIVE_SUBMIT" && message.requestId) return respond(async () => ({ dispatched: (await submitRequest(message.requestId!)).dispatched }));
       if (message.type === "WEB_LIVE_WAIT" && message.requestId) return respond(async () => ({ response: await waitForResponse(message.requestId!) }), true);
+      if (message.type === "WEB_LIVE_RECOVER" && message.request) return respond(async () => ({ response: await recoverResponse(message.request!, message.timeoutMs) }));
       if (message.type === "WEB_LIVE_CANCEL" && message.requestId) {
         if (prepared?.request.requestId === message.requestId) prepared.cancelRequested = true;
         sendResponse({ ok: true }); return false;

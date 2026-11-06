@@ -73,6 +73,11 @@ export class LiveTabWebAdapter implements WebAIAdapter {
     } finally { signal.removeEventListener("abort", cancel); }
   }
 
+  async recoverResponse(request: AIRequest, timeoutMs: number): Promise<AIResponse | undefined> {
+    const reply = await this.send<AIResponse>({ type: "WEB_LIVE_RECOVER", request, timeoutMs });
+    return reply.response;
+  }
+
   async createConversation(): Promise<void> {
     await this.send({ type: "WEB_LIVE_NEW_CONVERSATION" });
   }

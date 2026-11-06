@@ -46,6 +46,7 @@ export interface WebAIAdapter {
   prepareInput(request: AIRequest): Promise<void>;
   submit(requestId: string): Promise<void>;
   waitForResponse(requestId: string, signal: AbortSignal): Promise<AIResponse>;
+  recoverResponse?(request: AIRequest, timeoutMs: number): Promise<AIResponse | undefined>;
   createConversation(): Promise<void>;
   cleanup(): Promise<void>;
 }

@@ -64,6 +64,7 @@ npm test
 npm run test:coverage
 npm run build:release
 npm run test:release
+npm run promote:production
 ```
 
 `test:e2e:web` mở TNU fixture và local AI fixture trong hai cửa sổ trình duyệt, kiểm tra streaming, ảnh, rotation, Stop/switch/resume và dừng trước khi nộp. `test:e2e`/`test:e2e:auto` kiểm tra các luồng API fixture cũ; chúng không gọi API thật. `test:release` kiểm checksum artifact rồi chạy E2E trên đúng bản Chrome/Edge build.
@@ -72,9 +73,11 @@ npm run test:release
 
 `npm run build:release` tạo thư mục riêng, không xóa `.output` và không đóng/kill Chrome/Edge. Release trước được giữ để rollback.
 
-- Chrome: `release/v3.4.1/chrome-mv3`
-- Edge: `release/v3.4.1/edge-mv3`
-- SHA-256 receipt: `release/v3.4.1/release-manifest.json`
+`npm run validate:release` chỉ cập nhật `release/production` sau khi typecheck, toàn bộ test, coverage, checksum và E2E của Chrome/Edge đều đạt. Sau khi quảng bá thành công, artifact mang số phiên bản được dọn để chỉ giữ một bản production vật lý. Hãy nạp unpacked extension từ `release/production/chrome-mv3` để luôn dùng đường dẫn ổn định.
+
+- Chrome production: `release/production/chrome-mv3`
+- Edge production: `release/production/edge-mv3`
+- SHA-256 receipt: `release/production/release-manifest.json`
 
 Trong `chrome://extensions` hoặc `edge://extensions`, bật **Chế độ dành cho nhà phát triển**, bấm **Tải tiện ích đã giải nén** và chọn thư mục tương ứng.
 
@@ -88,4 +91,5 @@ Mặc định runner không gửi yêu cầu. `npm run test:real-api` chỉ ch�
 - Khi chọn Gemini API, nội dung câu hỏi, ảnh và tài liệu/cache đã chọn được gửi tới Google Gemini API. Không gửi cookie hoặc toàn bộ HTML TNU.
 - Khi dùng local fixture, nội dung chỉ được gửi tới máy chủ giả lập loopback do bộ E2E khởi động.
 - Khi chọn AI Web, prompt, ảnh, cache và tài liệu đã chọn được đưa vào tab provider mà người dùng đã bind.
-- Chỉ bài luyện tập được tự điền theo thiết lập. Bài tính điểm cần xác nhận; extension luôn dừng trước bước nộp.
+- Chế độ **Tự động đạt điểm tối đa** chỉ hoạt động với bài luyện tập. Tự nộp mặc định tắt, có giới hạn số lần làm và dừng nếu không đọc được điểm/đáp án đúng.
+- Bài tính điểm không được tự nộp: extension vẫn yêu cầu kiểm tra kép và xác nhận của người dùng.

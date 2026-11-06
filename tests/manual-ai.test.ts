@@ -34,6 +34,6 @@ describe("manual AI", () => {
     expect(() => parseManualResponse(value, question, 0.72, "req1")).toThrow();
   });
   it("preserves old settings and chooses the existing API by default", () => {
-    expect(migrateSettings({ schemaVersion: 3, model: "old-model" })).toMatchObject({ schemaVersion: 10, provider: "gemini_api", model: "old-model", webTimeoutMs: 300_000, scormPlaybackRate: 8 });
+    expect(migrateSettings({ schemaVersion: 3, model: "old-model" })).toMatchObject({ schemaVersion: 12, provider: "gemini_api", model: "old-model", webTimeoutMs: 300_000, scormPlaybackRate: 8, practiceFullScoreEnabled: false, practiceAutoSubmit: false, practiceCollectCacheWhenFull: false });
   });
 });

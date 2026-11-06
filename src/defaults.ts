@@ -1,7 +1,7 @@
 import type { AppSettings } from "./types";
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  schemaVersion: 10,
+  schemaVersion: 12,
   provider: "gemini_api",
   selectionRevision: "legacy",
   manualPrompt: "Phân tích câu hỏi và chọn đáp án đúng. Sử dụng tài liệu tham khảo nếu phù hợp, nêu lý do ngắn gọn.",
@@ -28,6 +28,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fallbackOrder: ["gemini_api", "openai_api", "anthropic_api"],
   fallbackMax: 2,
   delayMs: 450,
+  practiceFullScoreEnabled: false,
+  practiceAutoSubmit: false,
+  practiceCollectCacheWhenFull: false,
+  practiceMaxAttempts: 5,
+  webAutoRetryCount: 2,
   practiceKeywords: ["luyện tập", "ôn tập", "không tính điểm"],
   gradedKeywords: ["kiểm tra", "thi"],
   notificationsEnabled: true,

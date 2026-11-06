@@ -15,6 +15,8 @@ import { findMemoryDecision, quizKey, selectedMemoryEvidence } from "../src/answ
 import { citationFromChunk, searchKnowledge, searchSelectedKnowledge } from "../src/knowledge";
 import { isAttemptForTarget, isReviewForTarget, isSupportedQuizTarget } from "../src/quiz-navigation";
 import { practiceBatchReviewStep } from "../src/run-policy";
+import { practiceBatchIssue } from "../src/practice-batch";
+import { practiceReviewTransition, resetRunForPracticeAttempt } from "../src/practice-automation";
 import { confirmVerificationChoice, reconcileIndependentCheck } from "../src/verification";
 import { inferUniqueWebTabBinding, isWebProvider, shouldInvalidateBindingForAiUrl, summarizeBrowserTabs, validateStoredBinding, validateWebTabBinding, webAutomationPolicy } from "../src/web-tabs";
 import { buildWebRequestPrompt, ConfirmedWebCancellationError, createVerifiedConversation, executeWebRequest, parseWebAnswer, UnknownWebOutcomeError } from "../src/web-adapter";
@@ -40,7 +42,7 @@ const CONTENT_MESSAGE_TYPES = new Set<RuntimeMessage["type"]>(["GET_STATE", "ANS
 const EXTENSION_ONLY_TYPES = new Set<RuntimeMessage["type"]>([
   "SAVE_SETTINGS", "SWITCH_PROVIDER", "SELECT_GEMINI_MODEL", "BEGIN_CREDENTIAL_CHANGE", "COMPLETE_CREDENTIAL_CHANGE", "CANCEL_CREDENTIAL_CHANGE",
   "LIST_PROVIDER_MODELS", "SELECT_PROVIDER_MODEL", "TEST_API_CAPABILITY", "LIST_MODELS", "VALIDATE_API_KEY", "SCAN_COURSES", "SAVE_QUEUE",
-  "START_RUN", "STOP_RUN", "RESUME_RUN", "RETRY_QUESTION", "SKIP_QUESTION", "APPLY_SUGGESTION", "VERIFY_QUESTION", "MANUAL_NEW_CHAT", "RESOLVE_UNKNOWN_WEB", "CREATE_WEB_CONVERSATION",
+  "START_RUN", "STOP_RUN", "RESUME_RUN", "RETRY_QUESTION", "SKIP_QUESTION", "APPLY_SUGGESTION", "SUBMIT_PRACTICE", "VERIFY_QUESTION", "MANUAL_NEW_CHAT", "RESOLVE_UNKNOWN_WEB", "CREATE_WEB_CONVERSATION",
   "CLEAR_REQUEST_CHECKPOINT", "RESOLVE_UNKNOWN_USAGE", "CONFIRM_VERIFICATION", "CLEAR_ANSWER_MEMORY", "CLEAR_ALL_DATA", "INDEX_COURSE_MATERIALS", "EXTRACT_COURSE_MATERIALS", "SEARCH_KNOWLEDGE", "CLEAR_KNOWLEDGE_INDEX",
   "LIST_WEB_TABS", "BIND_WEB_TABS", "CLEAR_WEB_TAB_BINDING", "CHECK_WEB_TAB_BINDING", "SCORM_CONTROL"
 ]);
@@ -604,7 +606,27 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
     }
     case "SAVE_SETTINGS": {
       const selected = await getSettings();
-      await saveSettings({ ...message.settings, provider: selected.provider, model: selected.model, customModel: selected.customModel, openaiModel: selected.openaiModel, anthropicModel: selected.anthropicModel, selectionRevision: selected.selectionRevision });
+      const savedSettings = { ...message.settings, provider: selected.provider, model: selected.model, customModel: selected.customModel, openaiModel: selected.openaiModel, anthropicModel: selected.anthropicModel, selectionRevision: selected.selectionRevision };
+      await saveSettings(savedSettings);
+      // Practice controls are operational settings: saving them while a
+      // practice is already open must affect that run as users expect.
+      await mutateRun((run) => {
+        if (!run || run.target.assessmentKind !== "practice" || run.dryRunLimit) return run;
+        const currentAutomation = run.practiceAutomation;
+        const practiceAutomation = savedSettings.practiceFullScoreEnabled
+          ? {
+              enabled: true as const,
+              autoSubmit: savedSettings.practiceAutoSubmit,
+              collectCacheWhenFull: savedSettings.practiceCollectCacheWhenFull,
+              maxAttempts: savedSettings.practiceMaxAttempts,
+              attemptNumber: currentAutomation?.attemptNumber ?? 1,
+              webRetryCount: savedSettings.webAutoRetryCount,
+              scoreHistory: currentAutomation?.scoreHistory ?? [],
+              submitPhase: currentAutomation?.submitPhase ?? "idle" as const
+            }
+          : undefined;
+        return { ...run, settingsSnapshot: { ...run.settingsSnapshot, ...savedSettings }, practiceAutomation, updatedAt: new Date().toISOString() };
+      });
       return { ok: true };
     }
     case "SWITCH_PROVIDER": {
@@ -734,9 +756,8 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
       }
       const batchTargets = message.batchTargets?.length ? message.batchTargets : undefined;
       if (message.dryRunLimit !== undefined && (!Number.isInteger(message.dryRunLimit) || message.dryRunLimit < 1 || message.dryRunLimit > 20 || batchTargets || message.mode !== "from_current")) throw new Error("Chạy thử chỉ hỗ trợ 1–20 câu trên trang làm bài hiện tại; hãy chọn Từ câu hiện tại.");
-      if (batchTargets && (batchTargets.some((target) => target.assessmentKind !== "practice") || batchTargets.some((target) => target.courseId !== message.target.courseId))) {
-        throw new Error("Chuỗi tự động chỉ nhận các bài luyện tập trong cùng một môn.");
-      }
+      const batchIssue = batchTargets ? practiceBatchIssue(batchTargets) : undefined;
+      if (batchIssue) throw new Error(batchIssue);
       if (batchTargets && (message.mode !== "from_start" || batchTargets[0]?.id !== message.target.id || new Set(batchTargets.map((target) => target.id)).size !== batchTargets.length)) {
         throw new Error("Chuỗi luyện tập không hợp lệ. Hãy chọn lại danh sách bài.");
       }
@@ -748,6 +769,9 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
       }
       const now = new Date().toISOString();
       const isPracticeBatch = Boolean(batchTargets);
+      const practiceAutomation = settingsSnapshot.practiceFullScoreEnabled && message.target.assessmentKind === "practice" && !message.dryRunLimit
+        ? { enabled: true as const, autoSubmit: settingsSnapshot.practiceAutoSubmit, collectCacheWhenFull: settingsSnapshot.practiceCollectCacheWhenFull, maxAttempts: settingsSnapshot.practiceMaxAttempts, attemptNumber: 1, webRetryCount: settingsSnapshot.webAutoRetryCount, scoreHistory: [], submitPhase: "idle" as const }
+        : undefined;
       const run: RunSession = {
         id: crypto.randomUUID(), sessionId: crypto.randomUUID(), executionEpoch: crypto.randomUUID(), tnuTabId: tab.id, tnuWindowId: tab.windowId, aiTabId: webExecution?.binding.aiTabId, aiWindowId: webExecution?.binding.aiWindowId, conversationIdentity: initialConversationIdentity, webFixture: webExecution?.binding.fixture, webCompletedCount: 0, provider: settingsSnapshot.provider, settingsSnapshot, manualConversationCount: 0, manualNewChatRequired: true, dryRunLimit: message.dryRunLimit, dryRunCount: 0, target: message.target, mode: message.mode, status: "preparing",
         startedAt: now, updatedAt: now, page: 1, currentQuestion: 0, totalOnPage: 0,
@@ -756,6 +780,7 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
         reviewEveryAnswer: isPracticeBatch ? false : message.target.assessmentKind !== "practice" || message.reviewEveryAnswer,
         knowledgeMaterialIds: requestedMaterialIds,
         practiceBatch: batchTargets ? { targets: batchTargets, currentIndex: 0 } : undefined,
+        practiceAutomation,
         message: requestedMemoryKeys.length ? "Đang mở bài với các phần đáp án đã chọn..." : "Đang mở bài; câu chưa biết sẽ dùng AI đã chọn..."
       };
       await saveRun(run);
@@ -854,6 +879,14 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
         throw new Error("Bài kiểm tra chỉ được áp dụng sau khi kiểm tra kép đồng thuận.");
       }
       await sendToActiveTab({ type: "APPLY_SUGGESTION", executionEpoch: run.executionEpoch });
+      return { ok: true };
+    }
+    case "SUBMIT_PRACTICE": {
+      const run = await getRun();
+      if (!run || !run.executionEpoch || run.executionEpoch !== message.executionEpoch || run.status !== "awaiting_user" || run.target.assessmentKind !== "practice" || run.practiceAutomation?.submitPhase !== "ready") {
+        throw new Error("Bài luyện tập không ở trạng thái sẵn sàng nộp.");
+      }
+      await sendToActiveTab({ type: "SUBMIT_PRACTICE", executionEpoch: run.executionEpoch });
       return { ok: true };
     }
     case "CONFIRM_VERIFICATION": {
@@ -1142,51 +1175,74 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
               : undefined);
             if (!rotated) throw new Error("Phiên đã đổi khi tạo cuộc trò chuyện mới.");
           }
-          const request = {
-            sessionId: run.sessionId ?? run.id,
-            requestId: execution.requestId,
-            executionEpoch: message.executionEpoch,
-            questionId: message.question.id,
-            providerId: execution.providerId,
-            conversationIdentity,
-            prompt: buildWebRequestPrompt(settings.manualPrompt, message.question, knowledgeChunks, execution.requestId, cacheEvidence),
-            question: message.question,
-            timeoutMs: settings.webTimeoutMs,
-            onDispatch: async () => {
-              const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && current.activeExecution.status === "waiting"
-                ? { ...current, activeExecution: { ...current.activeExecution, status: "dispatching" }, message: `${message.question.number}: đang gửi nội dung tới ${web.binding.fixture ? "local AI fixture" : "tab AI Web"}...` }
+          let webRetry = 0;
+          const maxWebRetries = run.practiceAutomation?.enabled ? run.practiceAutomation.webRetryCount : 0;
+          while (true) {
+            const request = {
+              sessionId: run.sessionId ?? run.id,
+              requestId: execution.requestId,
+              executionEpoch: message.executionEpoch,
+              questionId: message.question.id,
+              providerId: execution.providerId,
+              conversationIdentity,
+              prompt: buildWebRequestPrompt(settings.manualPrompt, message.question, knowledgeChunks, execution.requestId, cacheEvidence),
+              question: message.question,
+              timeoutMs: settings.webTimeoutMs,
+              onDispatch: async () => {
+                const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && current.activeExecution.status === "waiting"
+                  ? { ...current, activeExecution: { ...current.activeExecution, status: "dispatching" }, message: `${message.question.number}: đang gửi nội dung tới ${web.binding.fixture ? "local AI fixture" : "tab AI Web"}${webRetry ? ` (retry ${webRetry}/${maxWebRetries})` : ""}...` }
+                  : undefined);
+                if (!updated) throw new Error("Phiên đã dừng trước khi gửi request.");
+              },
+              onInFlight: async () => {
+                const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && current.activeExecution.status === "dispatching"
+                  ? { ...current, activeExecution: { ...current.activeExecution, status: "in_flight" }, message: `${message.question.number}: ${web.binding.fixture ? "local AI fixture" : "AI Web"} đang trả lời...` }
+                  : undefined);
+                if (!updated) throw new Error("Phiên đã dừng sau khi gửi request.");
+              }
+            };
+            try {
+              let response;
+              try {
+                response = await executeWebRequest(web.adapter, request, controller.signal);
+              } catch (error) {
+                if (!(error instanceof UnknownWebOutcomeError) || webRetry >= maxWebRetries || controller.signal.aborted) throw error;
+                await mutateRun((current) => current?.id === run.id && current.activeExecution?.requestId === execution.requestId
+                  ? { ...current, message: `${message.question.number}: đang đối soát phản hồi AI Web trước khi retry...` }
+                  : undefined);
+                response = await web.adapter.recoverResponse?.(request, 15_000).catch(() => undefined);
+                if (!response) {
+                  webRetry += 1;
+                  try { conversationIdentity = await createVerifiedConversation(web.adapter); }
+                  catch { throw new UnknownWebOutcomeError("Không đối soát được phản hồi cũ hoặc tạo chat mới; request vẫn chưa xác định kết quả.", execution.requestId); }
+                  const retryReady = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId
+                    ? { ...current, conversationIdentity, webUnknownRequestId: undefined, activeExecution: { ...current.activeExecution, status: "waiting" }, message: `${message.question.number}: không có phản hồi dùng được; chuẩn bị retry ${webRetry}/${maxWebRetries} trong chat mới.` }
+                    : undefined);
+                  if (!retryReady) throw new Error("Phiên đã đổi trước khi retry AI Web.");
+                  continue;
+                }
+              }
+              const parsed = parseWebAnswer(response.content, message.question, execution.requestId, settings.confidenceThreshold);
+              const latest = await getRun();
+              if (!isCurrentExecution(latest, run.id, message.executionEpoch) || controller.signal.aborted) throw new Error("Phiên đã dừng hoặc thay đổi; phản hồi cũ bị loại bỏ.");
+              const decision = { ...parsed, source: "manual" as const, executionRequestId: execution.requestId };
+              const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && ["in_flight", "dispatching", "waiting"].includes(current.activeExecution.status)
+                ? { ...current, conversationIdentity, webUnknownRequestId: undefined, webCompletedCount: startNewConversation || webRetry ? 1 : previousCount + 1, webCompletedResponse: { question: message.question, decision }, activeExecution: { ...current.activeExecution, status: "completed" }, message: `${message.question.number}: đã nhận phản hồi hoàn chỉnh từ ${web.binding.fixture ? "local AI fixture" : "AI Web"}${webRetry ? ` sau ${webRetry} lần retry` : ""}.` }
                 : undefined);
-              if (!updated) throw new Error("Phiên đã dừng trước khi gửi request.");
-            },
-            onInFlight: async () => {
-              const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && current.activeExecution.status === "dispatching"
-                ? { ...current, activeExecution: { ...current.activeExecution, status: "in_flight" }, message: `${message.question.number}: ${web.binding.fixture ? "local AI fixture" : "AI Web"} đang trả lời...` }
-                : undefined);
-              if (!updated) throw new Error("Phiên đã dừng sau khi gửi request.");
+              if (!updated) throw new Error("Phiên đã đổi; phản hồi cũ không được dùng.");
+              return { ok: true, data: decision };
+            } catch (error) {
+              if (error instanceof UnknownWebOutcomeError) {
+                await mutateRun((current) => current?.id === run.id && current.activeExecution?.requestId === execution.requestId
+                  ? { ...current, webUnknownRequestId: execution.requestId, activeExecution: { ...current.activeExecution, status: "unknown" }, status: "paused", message: maxWebRetries ? `Đã hết ${maxWebRetries} lần retry AI Web nhưng kết quả vẫn chưa xác định. Kiểm tra tab AI trước.` : "AI Web đã nhận request nhưng chưa thể xác nhận kết quả. Không tự gửi lại; kiểm tra tab AI trước." }
+                  : undefined);
+              } else if (error instanceof ConfirmedWebCancellationError) {
+                await mutateRun((current) => current?.id === run.id && current.activeExecution?.requestId === execution.requestId
+                  ? { ...current, webUnknownRequestId: undefined, activeExecution: undefined, status: "paused", message: "Fixture xác nhận generation đã dừng trước khi hoàn tất. Câu hiện tại chưa được trả lời và có thể tiếp tục." }
+                  : undefined);
+              }
+              throw error;
             }
-          };
-          try {
-            const response = await executeWebRequest(web.adapter, request, controller.signal);
-            const parsed = parseWebAnswer(response.content, message.question, execution.requestId, settings.confidenceThreshold);
-            const latest = await getRun();
-            if (!isCurrentExecution(latest, run.id, message.executionEpoch) || controller.signal.aborted) throw new Error("Phiên đã dừng hoặc thay đổi; phản hồi cũ bị loại bỏ.");
-            const decision = { ...parsed, source: "manual" as const, executionRequestId: execution.requestId };
-            const updated = await mutateRun((current) => isCurrentExecution(current, run.id, message.executionEpoch) && current?.activeExecution?.requestId === execution.requestId && ["in_flight", "dispatching", "waiting"].includes(current.activeExecution.status)
-              ? { ...current, conversationIdentity, webCompletedCount: startNewConversation ? 1 : previousCount + 1, webCompletedResponse: { question: message.question, decision }, activeExecution: { ...current.activeExecution, status: "completed" }, message: `${message.question.number}: đã nhận phản hồi hoàn chỉnh từ ${web.binding.fixture ? "local AI fixture" : "AI Web"}.` }
-              : undefined);
-            if (!updated) throw new Error("Phiên đã đổi; phản hồi cũ không được dùng.");
-            return { ok: true, data: decision };
-          } catch (error) {
-            if (error instanceof UnknownWebOutcomeError) {
-              await mutateRun((current) => current?.id === run.id && current.activeExecution?.requestId === execution.requestId
-                ? { ...current, webUnknownRequestId: execution.requestId, activeExecution: { ...current.activeExecution, status: "unknown" }, status: "paused", message: "AI Web đã nhận request nhưng chưa thể xác nhận kết quả. Không tự gửi lại; kiểm tra tab AI trước." }
-                : undefined);
-            } else if (error instanceof ConfirmedWebCancellationError) {
-              await mutateRun((current) => current?.id === run.id && current.activeExecution?.requestId === execution.requestId
-                ? { ...current, webUnknownRequestId: undefined, activeExecution: undefined, status: "paused", message: "Fixture xác nhận generation đã dừng trước khi hoàn tất. Câu hiện tại chưa được trả lời và có thể tiếp tục." }
-                : undefined);
-            }
-            throw error;
           }
         }
         if (getProvider(run.provider ?? settings.provider).mode === "manual") {
@@ -1241,13 +1297,57 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
       // premature zero-result capture cannot permanently block this page.
       const shouldSave = message.entries.length > 0;
       const total = shouldSave ? await saveAnswerMemory(message.entries) : (await getAnswerMemory()).length;
-      if (sourceUrl && shouldSave && !alreadyCaptured) await markReviewCaptured(sourceUrl);
+      const hasReviewOutcome = shouldSave || Boolean(message.score);
+      if (sourceUrl && hasReviewOutcome && !alreadyCaptured) await markReviewCaptured(sourceUrl);
       if (shouldSave) await appendLog("success", `Đã học ${message.entries.length} đáp án đúng từ trang xem lại.`);
       else if (!message.entries.length && !alreadyCaptured) await appendLog("warning", "Trang xem lại hiện tại không có đáp án đúng có thể lưu.");
       let nextTarget;
+      let navigationEpoch: string | undefined;
       let batchCompleted = false;
-      const batchStep = matchingRun ? practiceBatchReviewStep(matchingRun, message.reviewComplete) : undefined;
-      if (matchingRun?.practiceBatch && batchStep) {
+      let retryingPractice = false;
+      // A non-perfect score without any learned answer is not enough evidence
+      // for another automatic attempt: pause instead of creating a blind loop.
+      const transitionScore = message.score && (message.score.full || shouldSave) ? message.score : undefined;
+      const automationTransition = matchingRun?.practiceAutomation && message.reviewComplete && !alreadyCaptured
+        ? practiceReviewTransition(matchingRun.practiceAutomation, transitionScore)
+        : undefined;
+      if (matchingRun?.practiceAutomation && automationTransition) {
+        if (automationTransition.outcome === "retry" && automationTransition.next) {
+          const learnedKeys = [...new Set([...(matchingRun.memorySourceQuizKeys ?? []), quizKey(matchingRun.target)])];
+          const nextRun = resetRunForPracticeAttempt({ ...matchingRun, memorySourceQuizKey: learnedKeys[0] ?? null, memorySourceQuizKeys: learnedKeys }, automationTransition.next);
+          await saveRun(nextRun);
+          navigationEpoch = nextRun.executionEpoch;
+          nextTarget = matchingRun.target;
+          retryingPractice = true;
+        } else if (automationTransition.outcome === "score_missing") {
+          await updateRun({ status: "paused", message: "Không đọc được điểm từ trang xem lại; đã dừng để tránh nộp lặp." });
+        } else if (automationTransition.outcome === "limit") {
+          await updateRun({ status: "paused", practiceAutomation: automationTransition.next, message: `Đã hết ${matchingRun.practiceAutomation.maxAttempts} lần làm nhưng chưa đạt điểm tối đa.` });
+        } else if (automationTransition.outcome === "complete" && automationTransition.next) {
+          const scoreLabel = automationTransition.next.scoreHistory.at(-1)?.label ?? "điểm tối đa";
+          if (matchingRun.practiceBatch) {
+            const batchStep = practiceBatchReviewStep(matchingRun, true);
+            nextTarget = batchStep?.nextTarget;
+            if (nextTarget) {
+              const learnedKeys = [...new Set([...(matchingRun.memorySourceQuizKeys ?? []), quizKey(matchingRun.target)])];
+              const nextRun = {
+                ...resetRunForPracticeAttempt({ ...matchingRun, target: nextTarget, memorySourceQuizKey: learnedKeys[0] ?? null, memorySourceQuizKeys: learnedKeys }, { ...matchingRun.practiceAutomation, attemptNumber: 1, scoreHistory: [], submitPhase: "idle" }),
+                practiceBatch: { ...matchingRun.practiceBatch, currentIndex: batchStep!.nextIndex },
+                message: `${matchingRun.target.name} đã đạt ${scoreLabel}. Đang chuyển sang ${nextTarget.name}...`
+              };
+              await saveRun(nextRun);
+              navigationEpoch = nextRun.executionEpoch;
+            } else {
+              batchCompleted = true;
+              await updateRun({ status: "completed", practiceAutomation: automationTransition.next, message: `Đã hoàn tất chuỗi luyện tập; bài cuối đạt ${scoreLabel}.` });
+            }
+          } else {
+            await updateRun({ status: "completed", practiceAutomation: automationTransition.next, message: `Đã đạt điểm tối đa ${scoreLabel} sau ${matchingRun.practiceAutomation.attemptNumber} lần làm.` });
+          }
+        }
+      } else {
+        const batchStep = matchingRun ? practiceBatchReviewStep(matchingRun, message.reviewComplete && !alreadyCaptured) : undefined;
+        if (matchingRun?.practiceBatch && batchStep) {
         nextTarget = batchStep.nextTarget;
         const learnedKeys = [...new Set([...(matchingRun.memorySourceQuizKeys ?? []), quizKey(matchingRun.target)])];
         if (nextTarget) {
@@ -1263,12 +1363,13 @@ async function handle(message: RuntimeMessage, sender: Browser.runtime.MessageSe
           batchCompleted = batchStep.batchCompleted;
           await updateRun({ status: "completed", message: `Đã hoàn tất chuỗi ${matchingRun.practiceBatch.targets.length} bài luyện tập và lưu các đáp án đúng đọc được.` });
         }
-      } else if (matchingRun) {
+        } else if (matchingRun) {
         await updateRun({ message: shouldSave
           ? `Đã lưu ${message.entries.length} đáp án đúng từ trang xem lại vào cache.`
           : "Chưa đọc được đáp án đúng trên trang xem lại; extension sẽ thử lại khi trang được tải lại." });
+        }
       }
-      return { ok: true, data: { saved: shouldSave ? message.entries.length : 0, total, nextTarget, batchCompleted } };
+      return { ok: true, data: { saved: shouldSave ? message.entries.length : 0, total, nextTarget, batchCompleted, retryingPractice, navigationEpoch } };
     }
     case "CLEAR_ANSWER_MEMORY":
       await clearAnswerMemory();

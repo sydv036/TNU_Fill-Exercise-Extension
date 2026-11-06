@@ -2,6 +2,7 @@ import { applyVerifiedDecisionToElement, isValidSelection, matchesQuestionSnapsh
 import { chunkText } from "../src/knowledge";
 import { isAttemptForTarget, isReviewForTarget, nextReviewPageUrl } from "../src/quiz-navigation";
 import { questionStartIndex, shouldPauseForDecision } from "../src/run-policy";
+import { bestQuizScore, reviewScore, shouldStopForExistingFullScore } from "../src/practice-automation";
 import pdfLibraryUrl from "pdfjs-dist/legacy/build/pdf.mjs?url&no-inline";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url&no-inline";
 import type { AnswerDecision, AppState, CourseIndex, CourseMaterial, KnowledgeChunk, KnowledgeExtractionResult, QuestionImage, QuestionSnapshot, QuizTarget, RuntimeMessage, RuntimeResponse, RunSession } from "../src/types";
@@ -213,6 +214,65 @@ function nextButton(): HTMLElement | null {
   return document.querySelector<HTMLElement>('input[name="next"], button[name="next"], .mod_quiz-next-nav');
 }
 
+function visible(element: HTMLElement): boolean {
+  const style = getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+}
+
+function finalSubmitControl(): HTMLElement | null {
+  const legacy = [...document.querySelectorAll<HTMLElement>('button[name="submitall"], input[name="submitall"]')].find(visible);
+  if (legacy) return legacy;
+  // TNU's Moodle theme omits name="submitall". Identify the finish form by
+  // both its destination and finishattempt marker, then require the exact
+  // user-facing submit label so another processattempt button cannot match.
+  const forms = [...document.querySelectorAll<HTMLFormElement>('form#frm-finishattempt, form[action*="/mod/quiz/processattempt.php"]')];
+  for (const form of forms) {
+    if (!form.querySelector('input[name="finishattempt"]')) continue;
+    const controls = [...form.querySelectorAll<HTMLElement>('button[type="submit"], input[type="submit"]')].filter(visible);
+    const exact = controls.find((control) => /^(nộp bài và kết thúc|submit all and finish)$/i.test((control.textContent || (control as HTMLInputElement).value || "").replace(/\s+/g, " ").trim()));
+    if (exact) return exact;
+  }
+  return null;
+}
+
+function submitConfirmationControl(): HTMLElement | null {
+  const dialogs = [...document.querySelectorAll<HTMLElement>('.modal.show, .modal[aria-hidden="false"], [role="dialog"]')].filter(visible);
+  for (const dialog of dialogs) {
+    const text = (dialog.textContent ?? "").replace(/\s+/g, " ");
+    if (!/(nộp bài|submit all|finish attempt)/i.test(text)) continue;
+    const controls = [...dialog.querySelectorAll<HTMLElement>('button[data-action="save"], button.btn-primary, input.btn-primary[type="submit"]')].filter(visible);
+    const exact = controls.find((control) => /(nộp bài và kết thúc|submit all and finish|xác nhận|confirm)/i.test((control.textContent || (control as HTMLInputElement).value || "").trim()));
+    if (exact) return exact;
+  }
+  return null;
+}
+
+async function submitPractice(run: RunSession): Promise<void> {
+  if (run.target.assessmentKind !== "practice" || !run.practiceAutomation?.enabled) throw new Error("Tự nộp chỉ được phép với bài luyện tập ở chế độ Full điểm.");
+  if (!run.executionEpoch || !await isSameEpoch(run)) return;
+  const control = finalSubmitControl();
+  if (!control) throw new Error("Không tìm thấy đúng nút nộp bài luyện tập; extension đã dừng an toàn.");
+  const updated = await runtime({
+    type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch,
+    patch: { status: "navigating", practiceAutomation: { ...run.practiceAutomation, submitPhase: "submitting" }, message: `Đang nộp lần làm ${run.practiceAutomation.attemptNumber}/${run.practiceAutomation.maxAttempts}...` }
+  });
+  if (!updated.ok || !await isSameEpoch(run)) return;
+  control.click();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (!location.pathname.includes("/mod/quiz/summary.php")) return;
+    const confirm = submitConfirmationControl();
+    if (confirm) {
+      confirm.click();
+      await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { practiceAutomation: { ...run.practiceAutomation, submitPhase: "submitted" }, message: "Đã xác nhận nộp bài; đang chờ trang xem lại..." } });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (location.pathname.includes("/mod/quiz/summary.php")) {
+    await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "paused", practiceAutomation: { ...run.practiceAutomation, submitPhase: "ready" }, message: "Không xác minh được hộp thoại nộp bài. Hãy nộp thủ công để tiếp tục." } });
+  }
+}
+
 async function pauseAtQuestion(run: RunSession, question: QuestionSnapshot, message: string, decision?: AnswerDecision): Promise<void> {
   if (!await isCurrentRun(run)) return;
   findQuestionElement(question.id)?.setAttribute("data-tnu-gemini-error", "true");
@@ -315,8 +375,9 @@ async function processRun(): Promise<void> {
       }
       const entries = await extractReviewEntriesWithRetry(document, target);
       const nextReviewUrl = nextReviewPageUrl(document, location.href);
-      const saved = await runtimeWithWorkerRetry<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean }>({
-        type: "SAVE_REVIEW_ANSWERS", runId: run?.id, executionEpoch: run?.executionEpoch, target, entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl
+      const score = reviewScore(document);
+      const saved = await runtimeWithWorkerRetry<{ saved: number; total: number; nextTarget?: QuizTarget; batchCompleted?: boolean; retryingPractice?: boolean; navigationEpoch?: string }>({
+        type: "SAVE_REVIEW_ANSWERS", runId: run?.id, executionEpoch: run?.executionEpoch, target, entries, sourceUrl: location.href, reviewComplete: !nextReviewUrl, score
       });
       if (!saved.ok) throw new Error(saved.error || "Không lưu được đáp án từ trang xem lại.");
       if (saved.data?.saved) await runtime({ type: "NOTIFY", title: "Đã ghi nhớ đáp án", message: `Đã lưu ${saved.data.saved} đáp án đúng để đối chiếu ở lần làm sau.`, level: "success" });
@@ -327,7 +388,10 @@ async function processRun(): Promise<void> {
         return;
       }
       if (saved.data?.nextTarget) {
-        if (run && await isSameEpoch(run)) location.assign(saved.data.nextTarget.url);
+        if (saved.data.navigationEpoch) {
+          const latest = await runtime<AppState>({ type: "GET_STATE" });
+          if (latest.data?.run?.executionEpoch === saved.data.navigationEpoch && latest.data.run.target.id === saved.data.nextTarget.id && latest.data.run.status === "preparing") location.assign(saved.data.nextTarget.url);
+        } else if (run && await isSameEpoch(run)) location.assign(saved.data.nextTarget.url);
         return;
       }
       if (saved.data?.batchCompleted) {
@@ -347,6 +411,36 @@ async function processRun(): Promise<void> {
     if (["paused", "completed"].includes(run.status)) return;
     if (kind === "summary") {
       const inBatch = Boolean(run.practiceBatch);
+      // V3.5.1 did not attach automation state to batch runs. Recover an
+      // already-open summary from the persisted setting after upgrading, so
+      // the user does not need to restart the whole practice sequence.
+      if (!run.practiceAutomation && run.target.assessmentKind === "practice" && state.settings.practiceFullScoreEnabled && !run.dryRunLimit) {
+        const practiceAutomation = {
+          enabled: true as const,
+          autoSubmit: state.settings.practiceAutoSubmit,
+          collectCacheWhenFull: state.settings.practiceCollectCacheWhenFull,
+          maxAttempts: state.settings.practiceMaxAttempts,
+          attemptNumber: 1,
+          webRetryCount: state.settings.webAutoRetryCount,
+          scoreHistory: [],
+          submitPhase: "idle" as const
+        };
+        const recovered = await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "answering", settingsSnapshot: { ...run.settingsSnapshot, ...state.settings }, practiceAutomation, message: "Đã khôi phục chế độ tự động đạt điểm tối đa cho chuỗi luyện tập." } });
+        if (recovered.ok) restartRequested = true;
+        return;
+      }
+      if (run.practiceAutomation?.enabled && run.target.assessmentKind === "practice") {
+        if (run.practiceAutomation.autoSubmit) {
+          if (["submitting", "submitted"].includes(run.practiceAutomation.submitPhase)) {
+            await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "paused", message: "Lần nộp trước chưa xác định kết quả sau khi trang tải lại. Hãy kiểm tra Moodle trước khi tiếp tục." } });
+            return;
+          }
+          await submitPractice(run); return;
+        }
+        await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "awaiting_user", practiceAutomation: { ...run.practiceAutomation, submitPhase: "ready" }, message: "Đã điền xong. Bấm “Nộp và tiếp tục” để kiểm tra điểm." } });
+        await runtime({ type: "NOTIFY", title: "Sẵn sàng nộp bài", message: "Extension đang chờ bạn bấm Nộp và tiếp tục.", level: "success" });
+        return;
+      }
       await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: inBatch ? "awaiting_user" : "completed", message: inBatch ? "Đã điền xong bài luyện tập này. Hãy tự nộp; sau trang xem lại tool sẽ chuyển sang bài tiếp theo." : "Đã tới trang tổng kết. Hãy kiểm tra và tự nộp bài." } });
       await runtime({ type: "NOTIFY", title: "Đã xử lý xong", message: inBatch ? "Hãy tự nộp bài luyện tập để tool ghi nhớ đáp án đúng và chuyển bài tiếp theo." : "Extension đã dừng ở trang tổng kết và chưa nộp bài.", level: "success" });
       return;
@@ -355,6 +449,14 @@ async function processRun(): Promise<void> {
       if (run.target.assessmentKind !== "practice") {
         await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "awaiting_user", message: "Bài kiểm tra tính điểm: hãy tự xác nhận bắt đầu trên Moodle." } });
         return;
+      }
+      if (run.practiceAutomation?.enabled) {
+        const best = bestQuizScore(document);
+        if (best && shouldStopForExistingFullScore(run.practiceAutomation, best)) {
+          await runtime({ type: "UPDATE_RUN", runId: run.id, executionEpoch: run.executionEpoch, patch: { status: "completed", practiceAutomation: { ...run.practiceAutomation, scoreHistory: [...run.practiceAutomation.scoreHistory, best], submitPhase: "reviewing" }, message: `Bài này đã đạt điểm tối đa ${best.label}; không cần làm lại.` } });
+          await runtime({ type: "NOTIFY", title: "Đã đủ điểm", message: `Điểm cao nhất hiện tại là ${best.label}.`, level: "success" });
+          return;
+        }
       }
       const confirm = document.querySelector<HTMLElement>("#id_submitbutton");
       const start = document.querySelector<HTMLElement>('button[name="startattempt"], input[name="startattempt"], form[action*="/mod/quiz/startattempt.php"] button[type="submit"], form[action*="/mod/quiz/startattempt.php"] input[type="submit"]');
@@ -456,6 +558,14 @@ export default defineContentScript({
       }
       if (message.type === "STOP_RUN") { stopped = true; restartRequested = false; sendResponse({ ok: true }); return false; }
       if (message.type === "APPLY_SUGGESTION") { applyPending(message.executionEpoch).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: String(error) })); return true; }
+      if (message.type === "SUBMIT_PRACTICE") {
+        void runtime<AppState>({ type: "GET_STATE" }).then((state) => {
+          const run = state.data?.run;
+          if (!run || !message.executionEpoch || run.executionEpoch !== message.executionEpoch || run.status !== "awaiting_user" || run.practiceAutomation?.submitPhase !== "ready") throw new Error("Bài luyện tập không ở trạng thái sẵn sàng nộp.");
+          return submitPractice(run);
+        }).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+        return true;
+      }
       if (message.type === "SHOW_VERIFICATION") {
         void runtime<AppState>({ type: "GET_STATE" }).then((result) => {
           if (!stopped && message.executionEpoch && result.data?.run?.executionEpoch === message.executionEpoch && result.data.run.status === "awaiting_user" && result.data.run.pendingDecision?.question.id === message.questionId) {
